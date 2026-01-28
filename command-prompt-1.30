@@ -1,0 +1,214 @@
+You are a senior professional MQL5 developer.
+
+Generate a COMPLETE MT5 Expert Advisor (EA).
+This document is the FINAL AUTHORITY.
+Implement EVERY rule exactly. Do not omit anything.
+Output FULL MQL5 code only.
+
+====================================================
+EA IDENTITY
+====================================================
+Name: CamboSMCore
+Version: 1.30 (must appear in code header)
+
+====================================================
+SYMBOL / TIMEFRAMES
+====================================================
+- XAUUSD only
+- H4 + H1 = Bias filters
+- M15 = entry
+
+====================================================
+INDICATORS
+====================================================
+H4:
+- EMA 50
+- EMA 200
+
+H1:
+- EMA 50
+- EMA 100
+
+M15:
+- EMA 20
+- EMA 50
+- EMA 100
+- ADX(14)
+- RSI(14)
+- ATR(14)
+
+====================================================
+HTF BIAS (VERY STRICT)
+====================================================
+
+H4 BUY BIAS:
+- H4 EMA50 > EMA200
+- H4 close above EMA50
+
+H4 SELL BIAS:
+- H4 EMA50 < EMA200
+- H4 close below EMA50
+
+H1 must CONFIRM H4:
+BUY CONFIRM:
+- H1 EMA50 > EMA100 AND H1 close above EMA50
+SELL CONFIRM:
+- H1 EMA50 < EMA100 AND H1 close below EMA50
+
+NO TRADE if H4 and H1 are not aligned.
+
+====================================================
+SIDEWAYS FILTERS (STRICT)
+====================================================
+
+A) EMA SPREAD (M15):
+- Spread = abs(M15 EMA50 - M15 EMA100)
+- Input InpMinEMASpread_USD default = 2.5
+- If Spread < threshold → BLOCK entries
+
+B) ADX FILTER (M15):
+- Input InpMinADX default = 22.0
+- ADX must be >= threshold → else BLOCK entries
+
+C) ATR VOLATILITY FILTER (M15):
+- ATR(14) must be >= InpMinATR_USD default = 2.0
+- If ATR < threshold → BLOCK entries
+
+====================================================
+RSI MOMENTUM CONFIRM (STRICT)
+====================================================
+BUY:
+- RSI >= 55
+SELL:
+- RSI <= 45
+
+====================================================
+ENTRY SETUP (A+ ONLY)
+====================================================
+
+GENERAL:
+- Use only closed candles for signals (index 1).
+- Entry only on new M15 bar.
+
+BUY SETUP (ALL must be true):
+1) HTF bias BUY (H4 BUY + H1 BUY confirm)
+2) Trade direction allows BUY
+3) M15 EMA20 > EMA50 > EMA100
+4) All sideways filters passed (Spread + ADX + ATR)
+5) Pullback quality:
+   - Pullback candle low touches or dips below EMA20 or EMA50
+   - BUT pullback candle CLOSE must remain above EMA50
+6) Confirmation candle quality (must be strong):
+   - Candle 1 is bullish AND closes above EMA20
+   - Body >= 60% of full candle range (very strong)
+   - Upper wick <= 25% of range (avoid rejection)
+7) Break of confirmation high:
+   - Enter BUY only if price breaks ABOVE the confirmation candle HIGH by InpEntryBuffer_USD (default 0.2)
+
+SELL SETUP (ALL must be true):
+1) HTF bias SELL (H4 SELL + H1 SELL confirm)
+2) Trade direction allows SELL
+3) M15 EMA20 < EMA50 < EMA100
+4) All sideways filters passed (Spread + ADX + ATR)
+5) Pullback quality:
+   - Pullback candle high touches or pierces EMA20 or EMA50
+   - BUT pullback candle CLOSE must remain below EMA50
+6) Confirmation candle quality:
+   - Candle 1 is bearish AND closes below EMA20
+   - Body >= 60% of full range
+   - Lower wick <= 25% of range
+7) Break of confirmation low:
+   - Enter SELL only if price breaks BELOW confirmation candle LOW by InpEntryBuffer_USD (default 0.2)
+
+====================================================
+STOP LOSS (STRICT & TECHNICAL)
+====================================================
+- SL is ALWAYS swing-based (no fixed SL in v1.30):
+BUY SL:
+- below the pullback candle LOW - InpSLBuffer_USD (default 0.3)
+SELL SL:
+- above the pullback candle HIGH + InpSLBuffer_USD (default 0.3)
+
+Validate SL distance:
+- SL distance must be between:
+  MinSL = InpMinSL_USD (default 2.5)
+  MaxSL = InpMaxSL_USD (default 8.0)
+If outside range → skip trade.
+
+====================================================
+TAKE PROFIT
+====================================================
+Default:
+- TP = 1.8R (InpRR default = 1.8)
+Optional safe partial:
+- If InpUsePartial = true:
+  TP1 = 1.0R close 50%
+  TP2 = 1.8R close rest
+
+====================================================
+TRADE LIMIT / RISK
+====================================================
+- 1 trade per day per EA instance
+- 1 open position max per EA instance
+- Fixed lot input
+
+====================================================
+MULTI-EA SUPPORT
+====================================================
+- Magic Number isolation required
+- Manage only positions with same Symbol+Magic
+
+====================================================
+EQUITY PROTECTION
+====================================================
+- Daily DD (default 3%)
+- Max DD (default 8%)
+- Same as previous versions
+
+====================================================
+BREAKEVEN & TRAILING (STRICT)
+====================================================
+Breakeven:
+- Trigger at 1.0R
+- Move SL to entry +0.2 (buy) / entry -0.2 (sell)
+
+Trailing:
+- Start at 1.2R
+- Trail by 0.8R distance (converted into USD using initial risk)
+- Must respect stop/freeze levels
+- Log every modification
+
+====================================================
+INPUTS REQUIRED
+====================================================
+- InpLotSize
+- InpMagicNumber
+- InpTradeDirection (BOTH/BUY/SELL)
+- InpMinEMASpread_USD (2.5)
+- InpMinADX (22)
+- InpMinATR_USD (2.0)
+- InpEntryBuffer_USD (0.2)
+- InpSLBuffer_USD (0.3)
+- InpMinSL_USD (2.5)
+- InpMaxSL_USD (8.0)
+- InpRR (1.8)
+- InpDailyDDPercent (3.0)
+- InpMaxDDPercent (8.0)
+- Breakeven/trailing toggles and parameters described above
+
+====================================================
+TECHNICAL REQUIREMENTS
+====================================================
+- Use iMA/iADX/iRSI/iATR handles created once
+- Use closed candles only for signal decisions
+- New-bar detection for entries
+- SL/TP normalization using _Digits
+- Validate stops/freeze level before modify
+- Print logs for every block reason
+
+====================================================
+OUTPUT
+====================================================
+Output FULL MQL5 code only.
+Must compile with no errors.
+Do not explain, only output code.
