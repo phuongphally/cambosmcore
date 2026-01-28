@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                                  CamboSMCore.mq5 |
 //|                                  Copyright 2026, Professional AI |
-//|                                     Version 17.0 – Debug & Tools |
+//|                                     Version 22.0 – Prop Guard    |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Professional AI"
 #property link      "https://www.mql5.com"
-#property version   "17.00"
+#property version   "22.00"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -16,21 +16,34 @@
 enum ENUM_SETUP_STATE { STATE_IDLE, STATE_WAIT_M5_BREAKOUT };
 
 //--- INPUTS
+input group "🛡️ PROP FIRM RISK GUARDS"
+input double InpMaxDailyLossPct      = 3.0;      // 3% daily loss lock
+input double InpMaxTotalDDPct        = 8.0;      // 8% max drawdown lock
+input bool   InpUseInitialBalanceDD  = true;     // baseline vs initial
+input int    InpMaxTradesPerDay      = 1;        
+input int    InpMaxTradesPerWeek     = 4;
+input int    InpMaxOpenPositions     = 1;
+
+input group "🧯 EXECUTION SAFETY"
+input double InpMaxSpreadUSD         = 0.60;     // block if spread too high
+input int    InpMaxSlippagePoints    = 30;       
+input bool   InpBlockOnFridayNY      = true;     // avoid late Friday
+
 input group "SOP Filters"
-input int      InpMagicNumber        = 40000;    
+input int      InpMagicNumber        = 40168;    
 input double   InpRiskPercent        = 0.5;      
 input bool     InpOneTradePerDay     = true;     
 input int      InpMinCandlesAbove    = 3;   
 
 input group "Stops/Targets (Global Inputs)"
-input double   InpFixedSL_Dist       = 25.0;     // Now a Global Input
-input double   InpFixedTP_Dist       = 45.0;     // Now a Global Input
+input double   InpFixedSL_Dist       = 25.0;     
+input double   InpFixedTP_Dist       = 45.0;     
 input double   InpEntryBuffer_USD    = 0.20;     
 
 input group "Breakout Filters (Configurable)"
-input bool     InpUseRSIFilter       = false;     // Enable/Disable RSI
+input bool     InpUseRSIFilter       = false;    
 input double   InpRSI_Overbought     = 80.0;     
-input bool     InpUseADXFilter       = true;     // Enable/Disable ADX
+input bool     InpUseADXFilter       = true;     
 input double   InpADX_MinTrend       = 20.0;     
 
 input group "Trade Management"
@@ -45,8 +58,8 @@ input string   InpAsianEnd           = "09:00";
 int hM15_E20, hM15_E50, hM15_E100, hM15_E200;
 int hM5_RSI, hM5_ADX;
 CTrade Trade; CPositionInfo Position; CSymbolInfo SymbolPtr; CAccountInfo Account;
-
-datetime lastM15, lastM5;
+double g_InitialBalance;
+datetime lastM15;
 ENUM_SETUP_STATE g_State = STATE_IDLE;
 double   g_BreakoutLevel = 0;
 string   g_DebugReason = "Waiting for M15 Setup";
@@ -56,6 +69,7 @@ string   g_DebugReason = "Waiting for M15 Setup";
 //+------------------------------------------------------------------+
 int OnInit() {
    if(!SymbolPtr.Name(_Symbol)) return INIT_FAILED;
+   g_InitialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    
    hM15_E20  = iMA(_Symbol, PERIOD_M15, 20, 0, MODE_EMA, PRICE_CLOSE);
    hM15_E50  = iMA(_Symbol, PERIOD_M15, 50, 0, MODE_EMA, PRICE_CLOSE);
@@ -65,18 +79,23 @@ int OnInit() {
    hM5_ADX   = iADX(_Symbol, PERIOD_M5, 14);
 
    Trade.SetExpertMagicNumber(InpMagicNumber);
+   Trade.SetDeviationInPoints(InpMaxSlippagePoints);
    return INIT_SUCCEEDED;
 }
 
 void OnTick() {
    UpdateDashboard();
+   
+   // Check Prop Firm Restrictions First
+   if(IsRiskGuardTriggered()) return;
 
    if(InpEnableBE) HandleBreakEven();
 
-   if(PositionsTotal() > 0) return;
-   if(InpOneTradePerDay && HasTradedToday()) {
-      g_State = STATE_IDLE;
-      g_DebugReason = "Daily Trade Limit Reached";
+   if(PositionsTotal() >= InpMaxOpenPositions) return;
+
+   // Friday Safety
+   if(InpBlockOnFridayNY && IsFridayLate()) {
+      g_DebugReason = "Friday Safety Active";
       return;
    }
 
@@ -92,60 +111,115 @@ void OnTick() {
 }
 
 //+------------------------------------------------------------------+
-//| Step 2: M5 Execution with Debug Reason                           |
+//| Execution Checks                                                 |
 //+------------------------------------------------------------------+
 void MonitorM5Execution() {
+   // Spread Check
+   double currentSpread = SymbolInfoDouble(_Symbol, SYMBOL_ASK) - SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   if(currentSpread > InpMaxSpreadUSD) {
+      g_DebugReason = StringFormat("Spread Too High: %.2f", currentSpread);
+      return;
+   }
+
    double m5_c1 = iClose(_Symbol, PERIOD_M5, 1);
-   
-   // 1. Structural Check
    bool isBreakout = (m5_c1 > g_BreakoutLevel && m5_c1 > iHigh(_Symbol, PERIOD_M5, 2) && m5_c1 > iOpen(_Symbol, PERIOD_M5, 1));
+   
    if(!isBreakout) {
       g_DebugReason = StringFormat("Waiting for M5 Close > %.2f", g_BreakoutLevel);
       return;
    }
 
-   // 2. Filter Check
    double rsi[], adx[];
    CopyBuffer(hM5_RSI, 0, 0, 1, rsi);
    CopyBuffer(hM5_ADX, 0, 0, 1, adx);
 
-   if(InpUseRSIFilter && rsi[0] >= InpRSI_Overbought) {
-      g_DebugReason = StringFormat("BLOCKED: RSI Overbought (%.2f)", rsi[0]);
-      return;
-   }
+   if(InpUseRSIFilter && rsi[0] >= InpRSI_Overbought) return;
+   if(InpUseADXFilter && adx[0] < InpADX_MinTrend) return;
 
-   if(InpUseADXFilter && adx[0] < InpADX_MinTrend) {
-      g_DebugReason = StringFormat("BLOCKED: Market in Range (ADX: %.2f)", adx[0]);
-      return;
-   }
-
-   // 3. Execution
    ExecuteBuy(m5_c1);
    g_State = STATE_IDLE;
-   g_DebugReason = "Trade Executed";
 }
 
 //+------------------------------------------------------------------+
-//| Dashboard Display                                                |
+//| Safety Functions                                                 |
 //+------------------------------------------------------------------+
-void UpdateDashboard() {
-   double rsi_val[], adx_val[];
-   CopyBuffer(hM5_RSI, 0, 0, 1, rsi_val);
-   CopyBuffer(hM5_ADX, 0, 0, 1, adx_val);
+bool IsRiskGuardTriggered() {
+   double dailyProfit = AccountInfoDouble(ACCOUNT_BALANCE) - AccountInfoDouble(ACCOUNT_EQUITY); // Simple check
+   double currentDD = (g_InitialBalance - AccountInfoDouble(ACCOUNT_EQUITY)) / g_InitialBalance * 100.0;
+   
+   if(currentDD >= InpMaxTotalDDPct) {
+      g_DebugReason = "BLOCK: Max Drawdown Hit";
+      return true;
+   }
+   
+   if(TradesThisPeriod(PERIOD_D1) >= InpMaxTradesPerDay) {
+      g_DebugReason = "BLOCK: Daily Trade Limit";
+      return true;
+   }
+   
+   if(TradesThisPeriod(PERIOD_W1) >= InpMaxTradesPerWeek) {
+      g_DebugReason = "BLOCK: Weekly Trade Limit";
+      return true;
+   }
+   
+   // HARD EQUITY PROTECTOR
+   double dailyLossLimit = g_InitialBalance * (InpMaxDailyLossPct / 100.0);
+   double currentDailyLoss = AccountInfoDouble(ACCOUNT_BALANCE) - AccountInfoDouble(ACCOUNT_EQUITY);
 
-   string text = "--- CAMBO SMC CORE DASHBOARD ---\n";
-   text += "State: " + EnumToString(g_State) + "\n";
-   text += "M5 RSI: " + DoubleToString(rsi_val[0], 2) + (InpUseRSIFilter ? " (Active)" : " (Off)") + "\n";
-   text += "M5 ADX: " + DoubleToString(adx_val[0], 2) + (InpUseADXFilter ? " (Active)" : " (Off)") + "\n";
-   text += "Target Breakout: " + DoubleToString(g_BreakoutLevel, 2) + "\n";
-   text += "STATUS: " + g_DebugReason;
+   if(currentDailyLoss >= dailyLossLimit) {
+      g_DebugReason = "CRITICAL: Daily Loss Limit Hit. Closing all!";
+      CloseAllPositions(); // Emergency close
+      return true;
+   }
+   
+   return false;
+}
 
-   Comment(text);
+bool IsFridayLate() {
+   MqlDateTime dt;
+   TimeCurrent(dt);
+   return (dt.day_of_week == 5 && dt.hour >= 16); // Blocks after 4 PM Friday
+}
+
+int TradesThisPeriod(ENUM_TIMEFRAMES period) {
+   HistorySelect(iTime(_Symbol, period, 0), TimeCurrent());
+   int count = 0;
+   for(int i = HistoryDealsTotal()-1; i>=0; i--) {
+      ulong t = HistoryDealGetTicket(i);
+      if(HistoryDealGetInteger(t, DEAL_MAGIC) == InpMagicNumber && HistoryDealGetInteger(t, DEAL_ENTRY) == DEAL_ENTRY_IN) count++;
+   }
+   return count;
 }
 
 //+------------------------------------------------------------------+
-//| Helpers (BE, Time, History)                                      |
+//| Core Logic (M15 & Helpers)                                       |
 //+------------------------------------------------------------------+
+void CheckM15Permission() {
+   double e20[], e50[], e100[], e200[];
+   CopyBuffer(hM15_E20,0,0,1,e20); CopyBuffer(hM15_E50,0,0,1,e50);
+   CopyBuffer(hM15_E100,0,0,1,e100); CopyBuffer(hM15_E200,0,0,1,e200);
+
+   if(e20[0] > e50[0] && e50[0] > e100[0] && e100[0] > e200[0]) {
+      g_State = STATE_WAIT_M5_BREAKOUT;
+      g_BreakoutLevel = iHigh(_Symbol, PERIOD_M15, 1) + InpEntryBuffer_USD;
+   } else {
+      g_State = STATE_IDLE;
+   }
+}
+
+void ExecuteBuy(double price) {
+   double sl = price - InpFixedSL_Dist; 
+   double tp = price + InpFixedTP_Dist; 
+   double riskAmount = AccountInfoDouble(ACCOUNT_BALANCE) * (InpRiskPercent / 100.0);
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double lot = riskAmount / ((MathAbs(price - sl) / _Point) * (tickValue / (SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE) / _Point)));
+   
+   lot = MathFloor(lot / SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP)) * SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   if(lot < SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN)) lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+
+   Trade.Buy(lot, _Symbol, SymbolPtr.Ask(), NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits));
+}
+
 void HandleBreakEven() {
    if(InpDisableBE_Asian && IsAsianSession()) return;
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
@@ -158,6 +232,13 @@ void HandleBreakEven() {
    }
 }
 
+void UpdateDashboard() {
+   string text = "--- CAMBO SMC PROP GUARD ---\n";
+   text += "Daily Trades: " + (string)TradesThisPeriod(PERIOD_D1) + "/" + (string)InpMaxTradesPerDay + "\n";
+   text += "Status: " + g_DebugReason;
+   Comment(text);
+}
+
 bool IsAsianSession() {
    datetime now = TimeCurrent();
    datetime start = StringToTime(TimeToString(now, TIME_DATE) + " " + InpAsianStart);
@@ -165,63 +246,15 @@ bool IsAsianSession() {
    return (end < start) ? (now >= start || now < end) : (now >= start && now <= end);
 }
 
-void CheckM15Permission() {
-   double e20[], e50[], e100[], e200[];
-   CopyBuffer(hM15_E20,0,0,4,e20); CopyBuffer(hM15_E50,0,0,4,e50);
-   CopyBuffer(hM15_E100,0,0,4,e100); CopyBuffer(hM15_E200,0,0,4,e200);
-
-   if(!(e20[0] > e50[0] && e50[0] > e100[0] && e100[0] > e200[0])) { 
-      g_DebugReason = "EMAs not stacked"; 
-      g_State = STATE_IDLE; 
-      return; 
-   }
-   g_State = STATE_WAIT_M5_BREAKOUT;
-   g_BreakoutLevel = iHigh(_Symbol, PERIOD_M15, 1) + 0.20;
-}
+bool HasTradedToday() { return TradesThisPeriod(PERIOD_D1) > 0; }
 
 //+------------------------------------------------------------------+
-//| Dynamic Lot Execution                                            |
+//| New Helper Function to Emergency Close                           |
 //+------------------------------------------------------------------+
-void ExecuteBuy(double price) {
-   // 1. Use Global Inputs for SL and TP
-   double sl = price - InpFixedSL_Dist; 
-   double tp = price + InpFixedTP_Dist; 
-   
-   // 2. Calculate Risk Amount based on Balance and InpRiskPercent
-   // If Balance is $500 and Risk is 0.5%, riskAmount = $2.50
-   double riskAmount = AccountInfoDouble(ACCOUNT_BALANCE) * (InpRiskPercent / 100.0);
-   
-   // 3. Get Symbol Data for Calculation
-   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
-   
-   // 4. Calculate Lot Size
-   // Formula: Lot = Risk / (SL_Distance_in_Points * Point_Value)
-   double slPoints = MathAbs(price - sl) / _Point;
-   double pointValue = tickValue / (tickSize / _Point);
-   
-   double lot = riskAmount / (slPoints * pointValue);
-   
-   // 5. Normalize Lot Size to Broker Requirements
-   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
-   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
-   
-   lot = MathFloor(lot / step) * step; 
-   
-   // Support 0.01 lot minimum
-   if(lot < minLot) lot = minLot; 
-   
-   // 6. Execute Trade
-   Trade.Buy(lot, _Symbol, SymbolPtr.Ask(), NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits));
-   
-   g_DebugReason = StringFormat("Trade Sent: %.2f Lots (Risk: $%.2f)", lot, riskAmount);
-}
-
-bool HasTradedToday() {
-   HistorySelect(iTime(_Symbol, PERIOD_D1, 0), TimeCurrent());
-   for(int i = HistoryDealsTotal() - 1; i >= 0; i--) {
-      ulong t = HistoryDealGetTicket(i);
-      if(HistoryDealGetInteger(t, DEAL_MAGIC) == InpMagicNumber && HistoryDealGetInteger(t, DEAL_ENTRY) == DEAL_ENTRY_IN) return true;
+void CloseAllPositions() {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(Position.SelectByIndex(i) && Position.Magic() == InpMagicNumber) {
+         Trade.PositionClose(Position.Ticket());
+      }
    }
-   return false;
 }
