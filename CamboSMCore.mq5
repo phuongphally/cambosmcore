@@ -14,7 +14,7 @@
 #include <Trade\AccountInfo.mqh>
 
 enum ENUM_SETUP_STATE { STATE_IDLE, STATE_WAIT_M5_BREAKOUT };
-
+input string InpTradeComment  = "CamboSMCore"; 
 //--- INPUTS
 input group "🛡️ PROP FIRM RISK GUARDS"
 input double InpMaxDailyLossPct      = 3.0;      // Daily loss lock (% of day start balance)
@@ -409,7 +409,7 @@ void ExecuteBuy()
    if(lot < minLot) lot = minLot;
    if(lot > maxLot) lot = maxLot;
 
-   bool ok = Trade.Buy(lot, _Symbol, entry, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits));
+   bool ok = Trade.Buy(lot, _Symbol, entry, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits), InpTradeComment);
 
    if(ok)
       g_DebugReason = StringFormat("Trade Sent: %.2f lots | Risk $%.2f", lot, riskAmount);
