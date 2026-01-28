@@ -36,7 +36,7 @@ input int      InpMagicNumber        = 40168;
 input double   InpRiskPercent        = 0.5;
 
 input group "Stops/Targets (Global Inputs)"
-input double   InpFixedSL_Dist       = 25.0;
+input double   InpFixedSL_Dist       = 35.0;
 input double   InpFixedTP_Dist       = 45.0;
 input double   InpEntryBuffer_USD    = 0.20;
 
@@ -97,6 +97,8 @@ void UpdateDayWeekBaselines()
 //+------------------------------------------------------------------+
 int OnInit()
 {
+   if(_Period != PERIOD_M15) { Alert("❌ ERROR: Use M15 Timeframe."); return(INIT_FAILED); }
+   
    if(!SymbolPtr.Name(_Symbol)) return INIT_FAILED;
 
    g_InitialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
