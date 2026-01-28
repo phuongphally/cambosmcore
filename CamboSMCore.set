@@ -1,3 +1,4 @@
+InpStartDelayHours=4
 InpMaxDailyLossPct=3.0
 InpMaxTotalDDPct=8.0
 InpMaxTradesPerDay=1
