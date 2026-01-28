@@ -1,1 +1,15 @@
 
+InpMagicNumber=123456
+InpRiskPercent=0.5
+InpOneTradePerDay=true
+InpMinCandlesAbove=3
+InpUseRSIFilter=false
+InpRSI_Overbought=80.0
+InpUseADXFilter=true
+InpADX_MinTrend=20.0
+InpEnableBE=true
+InpBE_Trigger_USD=25.0
+InpBE_Profit_Lock_USD=0.2
+InpDisableBE_Asian=true
+InpAsianStart=00:00
+InpAsianEnd=09:00
