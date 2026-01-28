@@ -1,0 +1,299 @@
+You are a senior professional MQL5 developer.
+
+Generate a COMPLETE MetaTrader 5 Expert Advisor (EA).
+This document is the FINAL AUTHORITY and represents the “latest spec”.
+You MUST implement EVERY rule below EXACTLY.
+DO NOT simplify, shorten, or omit any rule.
+DO NOT stub features.
+If a feature is defined, it MUST execute at runtime.
+The EA must be production-reliable, broker-safe, and multi-EA safe.
+
+====================================================
+EA IDENTITY
+====================================================
+Name: CamboSMCore
+Version: 2.10 (must appear in the code header as #property version "2.10")
+
+====================================================
+SYMBOL
+====================================================
+- XAUUSD ONLY
+- If symbol is not XAUUSD, EA must refuse to run (INIT_PARAMETERS_INCORRECT)
+
+====================================================
+TIMEFRAMES (MTF CONTEXT)
+====================================================
+- H4 = Market context / “big money” bias
+- H1 = Confirmation bias
+- M15 = Entry execution
+
+====================================================
+INDICATORS
+====================================================
+H4:
+- EMA 50
+- EMA 200
+
+H1:
+- EMA 50
+- EMA 100
+
+M15:
+- EMA 20
+- EMA 50
+- EMA 100
+- ADX(14)
+- RSI(14)
+- ATR(14)
+
+====================================================
+INPUT PARAMETERS (MANDATORY)
+====================================================
+
+General:
+- InpLotSize (double, default 0.01)
+- InpMagicNumber (int, default 123456)
+
+Trade direction mode:
+enum InpTradeDirection:
+- DIR_BOTH (default)
+- DIR_BUY_ONLY
+- DIR_SELL_ONLY
+
+Score settings:
+- InpMinScoreToTrade (int, default 10)       // minimum score to allow entry
+- InpMinAplusScore (int, default 11)         // optional for logging “A+”
+- InpEntryBuffer_USD (double, default 0.25)  // break buffer above high / below low
+
+Range / quality filters (used in scoring + gating):
+- InpMinEMASpread_USD (double, default 2.0)  // abs(M15 EMA50 - EMA100)
+- InpMinADX (double, default 22.0)
+- InpMinATR_USD (double, default 2.0)
+- InpRSI_Buy (double, default 55.0)
+- InpRSI_Sell (double, default 45.0)
+
+Stop / risk:
+- InpSLBuffer_USD (double, default 0.30)     // beyond pullback candle high/low
+- InpMinSL_USD (double, default 2.5)
+- InpMaxSL_USD (double, default 8.0)
+- InpRR (double, default 1.8)
+
+Trade frequency:
+- InpOneTradePerDay (bool, default true)     // MUST enforce 1 trade/day per EA instance
+
+Equity protection:
+- InpDailyDDPercent (double, default 3.0)
+- InpMaxDDPercent (double, default 8.0)
+- InpCloseOnDailyDD (bool, default false)
+- InpCloseOnMaxDD (bool, default true)
+
+Breakeven & trailing (R-based):
+- InpEnableBreakeven (bool, default true)
+- InpBE_Trigger_R (double, default 1.0)      // breakeven triggers at 1R
+- InpBE_Buffer_USD (double, default 0.20)
+
+- InpEnableTrailing (bool, default true)
+- InpTrailStart_R (double, default 1.2)      // trailing starts at 1.2R
+- InpTrailDistance_R (double, default 0.8)   // trail distance = 0.8R
+- InpTrailStep_USD (double, default 0.20)    // min SL move step to reduce spam
+
+====================================================
+CORE CONCEPT
+====================================================
+This EA uses a deterministic “AI Score” system.
+It computes BUY_SCORE and SELL_SCORE each new M15 bar (using CLOSED candles only).
+It trades ONLY when score threshold is met AND all safety rules allow trading.
+
+====================================================
+NON-NEGOTIABLE SAFETY / ORDER OF OPERATIONS
+====================================================
+On every tick:
+1) Equity protection checks (daily DD + max DD) must run FIRST. If locked -> no new entries.
+2) Manage active trades (breakeven/trailing) must run every tick (only own positions).
+3) Entry logic must run ONLY on a new M15 bar (new-bar detection).
+4) Entry decision must be based ONLY on closed candles (index 1) for signal candle logic.
+
+====================================================
+MULTI-EA SUPPORT (MANDATORY)
+====================================================
+- EA must manage ONLY positions with same Symbol AND same MagicNumber.
+- Ignore manual trades and other EAs completely.
+- Daily trade limit and “has traded today” must count ONLY this EA’s MagicNumber and Symbol.
+
+====================================================
+EQUITY PROTECTION (MANDATORY)
+====================================================
+DAILY DD:
+- At the start of each broker day (server time), record DayStartEquity.
+- DailyDD% = (DayStartEquity - CurrentEquity) / DayStartEquity * 100
+- If DailyDD% >= InpDailyDDPercent:
+  - Block new trades until next day reset.
+  - If InpCloseOnDailyDD == true: close ONLY this EA’s open positions.
+
+MAX DD (peak-to-valley):
+- Track PeakEquity = max(AccountEquity observed since EA start).
+- MaxDD% = (PeakEquity - CurrentEquity) / PeakEquity * 100
+- If MaxDD% >= InpMaxDDPercent:
+  - Block new trades permanently until EA restart.
+  - If InpCloseOnMaxDD == true: close ONLY this EA’s open positions.
+
+====================================================
+TRADE LIMIT (MANDATORY)
+====================================================
+- Enforce 1 trade per broker day per EA instance if InpOneTradePerDay = true.
+- “Traded today” means any DEAL_ENTRY_IN (opened) with same Symbol+Magic since D1 start.
+- After 1 entry today: block further entries until next broker day.
+
+====================================================
+HTF BIAS GATING (MANDATORY)
+====================================================
+H4 BUY BIAS:
+- H4 EMA50 > EMA200 AND H4 close above EMA50
+H4 SELL BIAS:
+- H4 EMA50 < EMA200 AND H4 close below EMA50
+
+H1 CONFIRMATION:
+BUY CONFIRM:
+- H1 EMA50 > EMA100 AND H1 close above EMA50
+SELL CONFIRM:
+- H1 EMA50 < EMA100 AND H1 close below EMA50
+
+GATING RULE:
+- BUY scoring/entries allowed ONLY if (H4 BUY bias AND H1 BUY confirm)
+- SELL scoring/entries allowed ONLY if (H4 SELL bias AND H1 SELL confirm)
+- If not aligned -> score for that direction must be treated as 0.
+
+====================================================
+SCORING MODEL (DETERMINISTIC “AI SCORE”)
+====================================================
+Compute BUY_SCORE and SELL_SCORE each new M15 bar.
+
+Use these components (points are fixed):
+(1) HTF alignment (MAX 5)
+- +3 if H4 bias aligned for that direction
+- +2 if H1 confirm aligned for that direction
+
+(2) M15 structure (MAX 3)
+- +2 if EMA20 > EMA50 > EMA100 (BUY) or EMA20 < EMA50 < EMA100 (SELL)
+- +1 if abs(EMA50-EMA100) >= InpMinEMASpread_USD
+
+(3) Momentum / volatility (MAX 3)
+- +1 if ADX(14) >= InpMinADX
+- +1 if ATR(14) >= InpMinATR_USD
+- +1 if RSI >= InpRSI_Buy (BUY) or RSI <= InpRSI_Sell (SELL)
+
+(4) Pullback quality (MAX 2)
+BUY:
+- +2 if pullback candle (closed candle index 1) has LOW <= EMA20 or EMA50
+     AND that pullback candle CLOSE >= EMA50
+SELL:
+- +2 if pullback candle HIGH >= EMA20 or EMA50
+     AND pullback candle CLOSE <= EMA50
+
+(5) Confirmation candle quality (MAX 2)
+Use the same closed candle (index 1) as confirmation candle.
+BUY:
+- +2 if candle is bullish AND closes above EMA20 AND
+     body >= 60% of range AND upper wick <= 25% of range
+SELL:
+- +2 if candle is bearish AND closes below EMA20 AND
+     body >= 60% of range AND lower wick <= 25% of range
+
+Total max score = 15.
+
+====================================================
+ENTRY DECISION (STRICT)
+====================================================
+- Trade direction mode must be respected (BUY_ONLY / SELL_ONLY / BOTH).
+- If BUY_SCORE >= InpMinScoreToTrade and SELL_SCORE < threshold -> consider BUY.
+- If SELL_SCORE >= threshold and BUY_SCORE < threshold -> consider SELL.
+- If both >= threshold -> take the higher score.
+- If equal -> NO TRADE.
+- Log the score breakdown and final scores every new bar.
+
+ENTRY EXECUTION (PRO-STYLE):
+- Do NOT enter at candle close.
+- Enter on break of the confirmation candle extremum with buffer:
+  BUY: place market order ONLY when current Ask >= (confirmation HIGH + InpEntryBuffer_USD)
+  SELL: place market order ONLY when current Bid <= (confirmation LOW - InpEntryBuffer_USD)
+
+====================================================
+STOP LOSS (STRUCTURE-BASED ONLY)
+====================================================
+Define “pullback candle” as the same closed candle index 1.
+
+BUY SL:
+- SL = pullback LOW - InpSLBuffer_USD
+SELL SL:
+- SL = pullback HIGH + InpSLBuffer_USD
+
+Validate SL distance:
+- RiskUSD = abs(EntryPrice - SL)
+- If RiskUSD < InpMinSL_USD or RiskUSD > InpMaxSL_USD -> SKIP trade.
+
+SL must NEVER be widened.
+
+====================================================
+TAKE PROFIT
+====================================================
+- TP = EntryPrice + RiskUSD * InpRR (BUY)
+- TP = EntryPrice - RiskUSD * InpRR (SELL)
+
+====================================================
+BREAKEVEN & TRAILING (MANDATORY EXECUTION)
+====================================================
+Management applies ONLY to this EA’s positions (Symbol+Magic).
+Must run every tick.
+
+Define initialRiskUSD for each position:
+- initialRiskUSD = abs(entryPrice - originalSL_at_entry)
+Store it per position (use position comment, global map keyed by ticket, or persistent structure).
+Do not recompute risk from current SL.
+
+BREAKEVEN:
+- If InpEnableBreakeven and ProfitUSD >= InpBE_Trigger_R * initialRiskUSD:
+  BUY: set SL = entryPrice + InpBE_Buffer_USD
+  SELL: set SL = entryPrice - InpBE_Buffer_USD
+- Only if the new SL is more protective than current SL (never loosen).
+
+TRAILING:
+- If InpEnableTrailing and ProfitUSD >= InpTrailStart_R * initialRiskUSD:
+  TrailDistanceUSD = InpTrailDistance_R * initialRiskUSD
+  BUY newSL = Bid - TrailDistanceUSD
+  SELL newSL = Ask + TrailDistanceUSD
+- Update only if SL improves AND |newSL - currentSL| >= InpTrailStep_USD
+
+BROKER SAFETY (MANDATORY):
+- Respect SYMBOL_TRADE_STOPS_LEVEL and SYMBOL_TRADE_FREEZE_LEVEL.
+- Ensure SL is on the correct side of price.
+- If PositionModify fails, Print the error and reason.
+
+====================================================
+SESSION RULE
+====================================================
+- Trade ALL sessions (no time filter)
+
+====================================================
+TECHNICAL IMPLEMENTATION REQUIREMENTS
+====================================================
+- Use indicator handles: iMA, iADX, iRSI, iATR (create once in OnInit).
+- CopyBuffer correctly; use closed candles for signal decisions (index 1).
+- Use M15 new-bar detection for scoring/logging.
+- Entries are triggered after scoring when price breaks the confirmation high/low + buffer.
+- Release all handles in OnDeinit.
+- Normalize prices using _Digits.
+- Add clear logs:
+  - equity locks
+  - daily trade limit lock
+  - score breakdown
+  - entry decision
+  - breakeven/trailing actions and failures
+
+====================================================
+OUTPUT
+====================================================
+- Output FULL MQL5 EA CODE ONLY.
+- Must compile with NO errors in MetaTrader 5.
+- Do NOT explain anything.
+- Do NOT shorten the code.
+- Include all inputs and enums exactly as specified.
