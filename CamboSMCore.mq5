@@ -36,7 +36,7 @@ input int      InpMagicNumber        = 40168;
 input double   InpRiskPercent        = 0.5;
 
 input group "Stops/Targets (Global Inputs)"
-input double   InpFixedSL_Dist       = 35.0;
+input double   InpFixedSL_Dist       = 15.0;
 input double   InpFixedTP_Dist       = 45.0;
 input double   InpEntryBuffer_USD    = 0.20;
 
@@ -53,6 +53,8 @@ input double   InpBE_Profit_Lock_USD = 0.20;
 input bool     InpDisableBE_Asian    = true;
 input string   InpAsianStart         = "00:00";
 input string   InpAsianEnd           = "09:00";
+
+
 
 //--- GLOBALS
 int hM15_E20, hM15_E50, hM15_E100, hM15_E200;
