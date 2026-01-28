@@ -1,0 +1,323 @@
+You are a senior professional MQL5 developer.
+
+Generate a COMPLETE MetaTrader 5 Expert Advisor (EA).
+This document is the FINAL AUTHORITY.
+You MUST implement EVERY rule below EXACTLY.
+DO NOT simplify, shorten, merge, or omit logic.
+DO NOT assume defaults.
+If a rule is defined, it MUST execute at runtime.
+
+The EA must be production-reliable, broker-safe, and multi-EA safe.
+This is an intraday GOLD (XAUUSD) strategy.
+
+====================================================
+EA IDENTITY
+====================================================
+Name: CamboSMCore
+Version: 2.40 (this version MUST appear in the code header)
+
+====================================================
+CHART & TIMEFRAME USAGE (MANDATORY)
+====================================================
+- EA is attached ONLY to:
+  Symbol: XAUUSD (or broker suffix like XAUUSDm)
+  Timeframe: M15
+
+- EA internally uses:
+  H4 = Market context
+  H1 = Bias confirmation
+  M15 = Setup (pullback + scoring)
+  M5  = Entry confirmation ONLY (breakout acceptance)
+
+Do NOT allow EA to run on other symbols or timeframes.
+
+====================================================
+INDICATORS
+====================================================
+H4:
+- EMA 50
+- EMA 200
+
+H1:
+- EMA 50
+- EMA 100
+
+M15:
+- EMA 20
+- EMA 50
+- EMA 100
+- ADX(14)
+- RSI(14)
+- ATR(14)
+
+M5:
+- NO indicators
+- Use candle OHLC only
+
+====================================================
+TRADE DIRECTION MODE
+====================================================
+Input enum InpTradeDirection:
+- DIR_BOTH
+- DIR_BUY_ONLY
+- DIR_SELL_ONLY
+
+Rules:
+- BUY_ONLY ignores sell logic completely
+- SELL_ONLY ignores buy logic completely
+
+====================================================
+DAILY EXTREMES FILTER (MANDATORY)
+====================================================
+Purpose:
+- Prevent chasing extended daily moves.
+
+Definitions (broker server day):
+- DayHigh = high of current D1 candle
+- DayLow  = low of current D1 candle
+
+Inputs:
+- InpMaxBuyDistanceFromDayLow_USD  = 35.0
+- InpMaxSellDistanceFromDayHigh_USD = 35.0
+
+Rules:
+- BUY is BLOCKED if:
+  (CurrentAsk - DayLow) >= InpMaxBuyDistanceFromDayLow_USD
+- SELL is BLOCKED if:
+  (DayHigh - CurrentBid) >= InpMaxSellDistanceFromDayHigh_USD
+
+If blocked:
+- Score for that direction MUST be forced to 0
+- Pending setup for that direction MUST be cancelled
+
+====================================================
+HTF BIAS GATING (NON-NEGOTIABLE)
+====================================================
+BUY allowed ONLY if:
+- H4 EMA50 > EMA200 AND H4 close > EMA50
+- H1 EMA50 > EMA100 AND H1 close > EMA50
+
+SELL allowed ONLY if:
+- H4 EMA50 < EMA200 AND H4 close < EMA50
+- H1 EMA50 < EMA100 AND H1 close < EMA50
+
+If HTF bias not aligned:
+- Score for that direction = 0
+
+====================================================
+STANDARD PULLBACK DEFINITION (STRICT – 2 CANDLES)
+====================================================
+
+A valid setup MUST use TWO DIFFERENT CLOSED M15 candles:
+
+----------------------------------------------------
+1) PULLBACK CANDLE (M15 index 2)
+----------------------------------------------------
+
+BUY:
+- Candle LOW touches or dips below EMA20 or EMA50
+- Candle CLOSE remains ABOVE EMA50
+- Candle body is NOT strong momentum (body <= 60% of range)
+
+SELL:
+- Candle HIGH touches or pierces EMA20 or EMA50
+- Candle CLOSE remains BELOW EMA50
+- Candle body <= 60% of range
+
+----------------------------------------------------
+2) CONFIRMATION CANDLE (M15 index 1)
+----------------------------------------------------
+
+BUY:
+- Candle is bullish
+- Candle CLOSE above EMA20
+- Body >= 60% of candle range
+- Upper wick <= 25% of range
+
+SELL:
+- Candle is bearish
+- Candle CLOSE below EMA20
+- Body >= 60% of candle range
+- Lower wick <= 25% of range
+
+====================================================
+AI SCORE SYSTEM (DECISION ENGINE)
+====================================================
+Compute BUY_SCORE and SELL_SCORE on every NEW M15 bar
+(using CLOSED candles only).
+
+MAX TOTAL SCORE = 15
+
+----------------------------------------------------
+(1) HTF Alignment (MAX 5)
+----------------------------------------------------
++3 if H4 aligned
++2 if H1 aligned
+
+----------------------------------------------------
+(2) M15 Structure (MAX 3)
+----------------------------------------------------
++2 if EMA20 > EMA50 > EMA100 (BUY)
++2 if EMA20 < EMA50 < EMA100 (SELL)
++1 if abs(EMA50 - EMA100) >= InpMinEMASpread_USD
+
+----------------------------------------------------
+(3) Momentum / Volatility (MAX 3)
+----------------------------------------------------
++1 if ADX >= InpMinADX
++1 if ATR >= InpMinATR_USD
++1 if RSI >= InpRSI_Buy (BUY) or RSI <= InpRSI_Sell (SELL)
+
+----------------------------------------------------
+(4) Pullback Quality (MAX 2)
+----------------------------------------------------
++2 if pullback candle rules are satisfied
+
+----------------------------------------------------
+(5) Confirmation Quality (MAX 2)
+----------------------------------------------------
++2 if confirmation candle rules are satisfied
+
+----------------------------------------------------
+ENTRY SCORE THRESHOLD
+----------------------------------------------------
+Input:
+- InpMinScoreToTrade = 10
+
+Rules:
+- Trade only if score >= threshold
+- If BUY and SELL both qualify:
+  - Take the higher score
+  - If equal → NO TRADE
+
+====================================================
+WAITING PHASE & M5 ENTRY CONFIRMATION (CRITICAL)
+====================================================
+
+After a valid M15 setup (score >= threshold):
+- Mark setup as PENDING
+- DO NOT enter yet
+
+----------------------------------------------------
+M5 BREAKOUT ACCEPTANCE (MANDATORY)
+----------------------------------------------------
+
+Define:
+- BuyTrigger = M15 Confirmation HIGH + InpEntryBuffer_USD
+- SellTrigger = M15 Confirmation LOW  - InpEntryBuffer_USD
+
+ENTRY is allowed ONLY if a CLOSED M5 candle satisfies:
+
+BUY:
+1) M5 CLOSE > BuyTrigger
+2) M5 candle bullish (Close > Open)
+3) M5 candle body >= 50% of its range
+
+SELL:
+1) M5 CLOSE < SellTrigger
+2) M5 candle bearish (Close < Open)
+3) M5 candle body >= 50% of its range
+
+----------------------------------------------------
+ENTRY EXECUTION
+----------------------------------------------------
+- Entry is executed at CLOSE of confirming M5 candle
+- Use MARKET order (Buy / Sell)
+- Do NOT enter on ticks
+- Do NOT enter on wicks
+- Only ONE attempt per setup
+
+----------------------------------------------------
+SETUP EXPIRY (MANDATORY)
+----------------------------------------------------
+- Setup valid for MAX 3 M15 candles
+- If no valid M5 confirmation within window:
+  - Cancel setup
+  - Log expiry reason
+
+====================================================
+STOP LOSS (STRUCTURE-BASED ONLY)
+====================================================
+BUY:
+- SL = pullback candle LOW (M15 index 2) - InpSLBuffer_USD
+
+SELL:
+- SL = pullback candle HIGH (M15 index 2) + InpSLBuffer_USD
+
+Validate SL:
+- SL distance must be between:
+  InpMinSL_USD = 3.0
+  InpMaxSL_USD = 12.0
+
+If invalid → skip trade
+
+SL must NEVER be widened.
+
+====================================================
+TAKE PROFIT
+====================================================
+- TP = Risk × InpRR
+- Default InpRR = 1.8
+
+====================================================
+BREAKEVEN & TRAILING (R-BASED)
+====================================================
+- Initial risk = distance from entry to original SL
+
+Breakeven:
+- Trigger at 1.0R
+- Move SL slightly positive (buffer)
+
+Trailing:
+- Start at 1.2R
+- Trail distance = 0.8R
+- Never loosen SL
+- Respect stop & freeze levels
+
+====================================================
+TRADE CONTROL & RISK
+====================================================
+- 1 trade per day per EA instance
+- 1 open position max
+- Magic Number isolation
+- Trade ALL sessions (no time filter)
+
+====================================================
+EQUITY PROTECTION
+====================================================
+- Daily DD = 3%
+- Max DD = 8%
+- Block trading when hit
+- Close only own trades if configured
+
+====================================================
+TECHNICAL IMPLEMENTATION (MANDATORY)
+====================================================
+- Use indicator handles (iMA, iADX, iRSI, iATR)
+- New-bar detection on M15 for scoring
+- New-bar detection on M5 for entry confirmation
+- Use CLOSED candles only for logic
+- Normalize prices with _Digits
+- Respect stop/freeze levels
+- Release all handles in OnDeinit()
+
+====================================================
+LOGGING (MANDATORY)
+====================================================
+Log clearly:
+- Pullback candle (index 2)
+- Confirmation candle (index 1)
+- Score breakdown
+- Pending setup creation
+- M5 confirmation success/failure
+- Setup expiry
+- Entry execution
+- Blocks (daily extreme, HTF, DD)
+
+====================================================
+OUTPUT
+====================================================
+- Output FULL MQL5 EA CODE ONLY
+- Must compile with NO errors
+- DO NOT explain anything
+- DO NOT shorten the code
