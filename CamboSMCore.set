@@ -13,3 +13,6 @@ InpBE_Profit_Lock_USD=0.2
 InpDisableBE_Asian=true
 InpAsianStart=00:00
 InpAsianEnd=09:00
+
+InpFixedSL_Dist=25.0
+InpFixedTP_Dist=45.0
