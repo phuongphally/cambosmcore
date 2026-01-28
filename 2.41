@@ -1,0 +1,247 @@
+You are a senior professional MQL5 developer AND execution-focused trading engineer.
+
+Generate a COMPLETE MetaTrader 5 Expert Advisor.
+This document is the FINAL AUTHORITY.
+You MUST implement EVERY rule exactly.
+DO NOT simplify, compress, or omit logic.
+DO NOT change strategy logic unless explicitly stated.
+Focus on EXECUTION CORRECTNESS.
+
+====================================================
+EA IDENTITY
+====================================================
+Name: CamboSMCore
+Version: 2.41 (must appear in header and code)
+
+====================================================
+CHART & SYMBOL RULES (STRICT)
+====================================================
+- EA MUST be attached to M15 chart ONLY
+- EA MUST support any XAUUSD symbol variant:
+  XAUUSD, XAUUSDm, XAUUSD.r, XAUUSDpro, etc
+- Reject all other symbols/timeframes with clear error
+
+====================================================
+TIMEFRAME ROLES (DO NOT MIX)
+====================================================
+H4  → market bias
+H1  → bias confirmation
+M15 → setup (pullback + scoring)
+M5  → ENTRY CONFIRMATION ONLY (timing)
+
+EA is attached to M15.  
+M5 is read internally only.
+
+====================================================
+INDICATORS
+====================================================
+H4:
+- EMA 50
+- EMA 200
+
+H1:
+- EMA 50
+- EMA 100
+
+M15:
+- EMA 20
+- EMA 50
+- EMA 100
+- ADX(14)
+- RSI(14)
+- ATR(14)
+
+M5:
+- NO indicators
+- Use candle OHLC only
+
+====================================================
+TRADE DIRECTION MODE
+====================================================
+Input enum:
+- BUY_ONLY
+- SELL_ONLY
+- BOTH
+
+====================================================
+DAILY EXTREMES FILTER (MANDATORY)
+====================================================
+BUY blocked if:
+(CurrentAsk - DayLow) >= InpMaxBuyDistanceFromDayLow_USD
+
+SELL blocked if:
+(DayHigh - CurrentBid) >= InpMaxSellDistanceFromDayHigh_USD
+
+If blocked:
+- Score forced to 0
+- Pending setup cancelled immediately
+
+====================================================
+HTF BIAS GATE (HARD FILTER)
+====================================================
+BUY allowed only if:
+- H4 EMA50 > EMA200 AND close > EMA50
+- H1 EMA50 > EMA100 AND close > EMA50
+
+SELL allowed only if:
+- H4 EMA50 < EMA200 AND close < EMA50
+- H1 EMA50 < EMA100 AND close < EMA50
+
+====================================================
+STANDARD PULLBACK (STRICT)
+====================================================
+Uses CLOSED M15 candles only.
+
+Pullback candle = M15 index 2  
+Confirmation candle = M15 index 1
+
+BUY pullback:
+- Low touches EMA20 or EMA50
+- Close remains above EMA50
+- Body ≤ 60% of range
+
+SELL pullback:
+- High touches EMA20 or EMA50
+- Close remains below EMA50
+- Body ≤ 60% of range
+
+Confirmation candle:
+- Strong body ≥ 60%
+- Small rejection wick ≤ 25%
+- Close above EMA20 (BUY) / below EMA20 (SELL)
+
+====================================================
+AI SCORE SYSTEM (UNCHANGED)
+====================================================
+Keep existing scoring logic exactly:
+- HTF
+- M15 structure
+- EMA spread
+- ADX / ATR / RSI
+- Pullback quality
+- Confirmation quality
+
+Trade only if score ≥ InpMinScoreToTrade.
+
+====================================================
+WAITING PHASE & M5 ENTRY CONFIRMATION (CRITICAL FIX)
+====================================================
+After valid M15 setup:
+- Mark setup as PENDING
+- DO NOT ENTER yet
+
+----------------------------------------------------
+M5 CONFIRMATION (ACCEPTANCE)
+----------------------------------------------------
+Wait for a CLOSED M5 candle.
+
+BUY:
+- M5 CLOSE > (M15 confirmation HIGH + buffer)
+- Candle bullish
+- Body ≥ 50% of range
+
+SELL:
+- M5 CLOSE < (M15 confirmation LOW − buffer)
+- Candle bearish
+- Body ≥ 50% of range
+
+----------------------------------------------------
+ENTRY EXECUTION (IMPORTANT FIX)
+----------------------------------------------------
+- Entry uses MARKET order at M5 candle CLOSE price
+- NO pending orders
+- NO tick-based entry
+- ONE attempt per setup
+
+----------------------------------------------------
+CRITICAL RISK FIX (MANDATORY)
+----------------------------------------------------
+InitialRisk MUST be recalculated AT ENTRY using:
+- BUY: entryPrice − stopLoss
+- SELL: stopLoss − entryPrice
+
+DO NOT use trigger price for risk calculation.
+
+This risk value MUST be:
+- Stored in trade comment
+- Used for TP, breakeven, trailing
+
+====================================================
+SETUP EXPIRY
+====================================================
+- Setup expires after 3 M15 candles
+- If expired → cancel pending setup
+
+====================================================
+STOP LOSS (STRUCTURE-BASED)
+====================================================
+BUY:
+- SL = pullback candle LOW − buffer
+
+SELL:
+- SL = pullback candle HIGH + buffer
+
+Validate SL:
+- Min = 3 USD
+- Max = 12 USD
+- If invalid → skip trade
+
+NEVER widen SL.
+
+====================================================
+TAKE PROFIT
+====================================================
+TP = InitialRisk × RR (default RR = 1.8)
+
+====================================================
+BREAKEVEN & TRAILING (R-BASED)
+====================================================
+Breakeven:
+- Trigger at 1.0R
+- Move SL slightly positive
+
+Trailing:
+- Start at 1.2R
+- Distance = 0.8R
+- NEVER loosen SL
+
+====================================================
+TRADE & EQUITY CONTROL
+====================================================
+- Max 1 trade per day
+- Max 1 open position
+- Magic-number isolated
+- Daily DD = 3%
+- Max DD = 8%
+- Block trading when hit
+
+====================================================
+TECHNICAL FIXES (MANDATORY)
+====================================================
+- Validate ALL CopyBuffer() return values
+- Do NOT use uninitialized arrays
+- Use symbol-based PositionModify (safe overload)
+- Normalize prices with _Digits
+- Respect stop & freeze levels
+- Release all indicator handles
+
+====================================================
+LOGGING (MANDATORY)
+====================================================
+Log:
+- Setup creation
+- Score details
+- M5 confirmation success/failure
+- Setup expiry
+- Entry execution
+- Risk (R) used
+- Equity blocks
+
+====================================================
+OUTPUT REQUIREMENTS
+====================================================
+- Output FULL MQL5 CODE ONLY
+- Must compile with ZERO errors
+- No explanations
+- No omissions
+- No shortening
