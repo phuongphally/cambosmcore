@@ -54,7 +54,8 @@ input bool     InpDisableBE_Asian    = true;
 input string   InpAsianStart         = "00:00";
 input string   InpAsianEnd           = "09:00";
 
-
+input group "⏳ START DELAY"
+input int InpStartDelayHours = 4;   // Delay EA start in hours
 
 //--- GLOBALS
 int hM15_E20, hM15_E50, hM15_E100, hM15_E200;
@@ -74,7 +75,7 @@ datetime lastM15 = 0;
 ENUM_SETUP_STATE g_State = STATE_IDLE;
 double   g_BreakoutLevel = 0.0;
 string   g_DebugReason = "Waiting for M15 Setup";
-
+datetime g_EAStartTime = 0;
 //+------------------------------------------------------------------+
 //| Utility: roll day/week baseline                                  |
 //+------------------------------------------------------------------+
@@ -102,7 +103,8 @@ int OnInit()
    if(_Period != PERIOD_M15) { Alert("❌ ERROR: Use M15 Timeframe."); return(INIT_FAILED); }
    
    if(!SymbolPtr.Name(_Symbol)) return INIT_FAILED;
-
+   g_EAStartTime = TimeCurrent();
+  
    g_InitialBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    g_DayStartTime   = iTime(_Symbol, PERIOD_D1, 0);
    g_WeekStartTime  = iTime(_Symbol, PERIOD_W1, 0);
@@ -270,7 +272,16 @@ bool ValidateStopsForBuy(double entry, double sl, double tp)
 void OnTick()
 {
    UpdateDashboard();
+   
+      if(IsStartDelayActive())
+      {
+         int remain = (InpStartDelayHours * 3600) - (int)(TimeCurrent() - g_EAStartTime);
+         g_DebugReason = StringFormat("START DELAY ACTIVE: %d min remaining", remain / 60);
+         g_State = STATE_IDLE;
+         return;
+      }
 
+   
    // Prop guard first
    if(IsRiskGuardTriggered())
    {
@@ -473,4 +484,12 @@ void CloseAllPositions()
          Trade.PositionClose(Position.Ticket());
       }
    }
+}
+
+bool IsStartDelayActive()
+{
+   if(InpStartDelayHours <= 0) return false;
+
+   int delaySeconds = InpStartDelayHours * 3600;
+   return (TimeCurrent() - g_EAStartTime) < delaySeconds;
 }
