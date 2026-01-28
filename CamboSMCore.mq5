@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                                  CamboSMCore.mq5 |
 //|                                  Copyright 2026, Professional AI |
-//|                                   Version 22.1 – Prop Guard FIX  |
+//|                                   Version 22.10 – Prop Guard FIX  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Professional AI"
 #property link      "https://www.mql5.com"
