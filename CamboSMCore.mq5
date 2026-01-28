@@ -20,7 +20,12 @@ input group "SOP Filters"
 input int      InpMagicNumber        = 40000;    
 input double   InpRiskPercent        = 0.5;      
 input bool     InpOneTradePerDay     = true;     
-input int      InpMinCandlesAbove    = 3;        
+input int      InpMinCandlesAbove    = 3;   
+
+input group "Stops/Targets (Global Inputs)"
+input double   InpFixedSL_Dist       = 25.0;     // Now a Global Input
+input double   InpFixedTP_Dist       = 45.0;     // Now a Global Input
+input double   InpEntryBuffer_USD    = 0.20;     
 
 input group "Breakout Filters (Configurable)"
 input bool     InpUseRSIFilter       = false;     // Enable/Disable RSI
@@ -174,9 +179,42 @@ void CheckM15Permission() {
    g_BreakoutLevel = iHigh(_Symbol, PERIOD_M15, 1) + 0.20;
 }
 
+//+------------------------------------------------------------------+
+//| Dynamic Lot Execution                                            |
+//+------------------------------------------------------------------+
 void ExecuteBuy(double price) {
-   double sl = price - 25.0; double tp = price + 45.0;
-   Trade.Buy(0.10, _Symbol, SymbolPtr.Ask(), NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits));
+   // 1. Use Global Inputs for SL and TP
+   double sl = price - InpFixedSL_Dist; 
+   double tp = price + InpFixedTP_Dist; 
+   
+   // 2. Calculate Risk Amount based on Balance and InpRiskPercent
+   // If Balance is $500 and Risk is 0.5%, riskAmount = $2.50
+   double riskAmount = AccountInfoDouble(ACCOUNT_BALANCE) * (InpRiskPercent / 100.0);
+   
+   // 3. Get Symbol Data for Calculation
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   
+   // 4. Calculate Lot Size
+   // Formula: Lot = Risk / (SL_Distance_in_Points * Point_Value)
+   double slPoints = MathAbs(price - sl) / _Point;
+   double pointValue = tickValue / (tickSize / _Point);
+   
+   double lot = riskAmount / (slPoints * pointValue);
+   
+   // 5. Normalize Lot Size to Broker Requirements
+   double step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+   double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+   
+   lot = MathFloor(lot / step) * step; 
+   
+   // Support 0.01 lot minimum
+   if(lot < minLot) lot = minLot; 
+   
+   // 6. Execute Trade
+   Trade.Buy(lot, _Symbol, SymbolPtr.Ask(), NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits));
+   
+   g_DebugReason = StringFormat("Trade Sent: %.2f Lots (Risk: $%.2f)", lot, riskAmount);
 }
 
 bool HasTradedToday() {
