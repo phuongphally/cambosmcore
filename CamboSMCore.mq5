@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
-//|                                                  CamboSMCore.mq5 |
+//|                                     CamboSMCore_v22.12_Full.mq5 |
 //|                                  Copyright 2026, Professional AI |
-//|                                   Version 22.10 – Prop Guard FIX  |
+//|                                  Version 22.12 – Direction Mode  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Professional AI"
 #property link      "https://www.mql5.com"
-#property version   "22.10"
+#property version   "22.12"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -13,9 +13,17 @@
 #include <Trade\PositionInfo.mqh>
 #include <Trade\AccountInfo.mqh>
 
+//--- ENUMS
 enum ENUM_SETUP_STATE { STATE_IDLE, STATE_WAIT_M5_BREAKOUT };
-input string InpTradeComment  = "CamboSMCore"; 
+enum ENUM_TRADE_DIR   { DIR_NONE, DIR_BUY, DIR_SELL };
+enum ENUM_DIR_MODE    { MODE_BOTH, MODE_BUY_ONLY, MODE_SELL_ONLY }; // New Enum
+
 //--- INPUTS
+input string InpTradeComment  = "CamboSMCore"; 
+
+input group "⚙️ GLOBAL STRATEGY"
+input ENUM_DIR_MODE InpTradeMode     = MODE_BOTH; // Select: Both, Buy Only, or Sell Only
+
 input group "🛡️ PROP FIRM RISK GUARDS"
 input double InpMaxDailyLossPct      = 3.0;      // Daily loss lock (% of day start balance)
 input double InpMaxTotalDDPct        = 8.0;      // Max drawdown lock (% of baseline)
@@ -26,7 +34,7 @@ input int    InpMaxOpenPositions     = 1;
 input bool   InpEmergencyCloseOnDailyLock = true;
 
 input group "🧯 EXECUTION SAFETY"
-input double InpMaxSpreadUSD         = 0.60;     // block if spread too high (XAUUSD)
+input double InpMaxSpreadUSD         = 0.60;     // block if spread too high (Price difference)
 input int    InpMaxSlippagePoints    = 30;
 input bool   InpBlockOnFridayNY      = true;     // avoid late Friday
 input int    InpFridayBlockHour      = 16;       // broker time hour
@@ -36,20 +44,21 @@ input int      InpMagicNumber        = 40168;
 input double   InpRiskPercent        = 0.5;
 
 input group "Stops/Targets (Global Inputs)"
-input double   InpFixedSL_Dist       = 15.0;
-input double   InpFixedTP_Dist       = 45.0;
-input double   InpEntryBuffer_USD    = 0.20;
+input double   InpFixedSL_Dist       = 15.0;     // Distance in Price (USD)
+input double   InpFixedTP_Dist       = 45.0;     // Distance in Price (USD)
+input double   InpEntryBuffer_USD    = 0.20;     // Buffer for breakout entry
 
 input group "Breakout Filters (Configurable)"
 input bool     InpUseRSIFilter       = false;
-input double   InpRSI_Overbought     = 80.0;
+input double   InpRSI_Overbought     = 80.0;     // Block Buy if above
+input double   InpRSI_Oversold       = 20.0;     // Block Sell if below
 input bool     InpUseADXFilter       = true;
 input double   InpADX_MinTrend       = 20.0;
 
 input group "Trade Management"
 input bool     InpEnableBE           = true;
-input double   InpBE_Trigger_USD     = 25.0;
-input double   InpBE_Profit_Lock_USD = 0.20;
+input double   InpBE_Trigger_USD     = 25.0;     // Distance to trigger BE
+input double   InpBE_Profit_Lock_USD = 0.20;     // Profit to lock
 input bool     InpDisableBE_Asian    = true;
 input string   InpAsianStart         = "00:00";
 input string   InpAsianEnd           = "09:00";
@@ -61,10 +70,10 @@ input int InpStartDelayHours = 4;   // Delay EA start in hours
 int hM15_E20, hM15_E50, hM15_E100, hM15_E200;
 int hM5_RSI, hM5_ADX;
 
-CTrade        Trade;
-CPositionInfo Position;
-CSymbolInfo   SymbolPtr;
-CAccountInfo  Account;
+CTrade         Trade;
+CPositionInfo  Position;
+CSymbolInfo    SymbolPtr;
+CAccountInfo   Account;
 
 double   g_InitialBalance = 0.0;
 double   g_DayStartBalance = 0.0;
@@ -73,9 +82,11 @@ datetime g_WeekStartTime = 0;
 
 datetime lastM15 = 0;
 ENUM_SETUP_STATE g_State = STATE_IDLE;
+ENUM_TRADE_DIR   g_SetupDir = DIR_NONE; 
 double   g_BreakoutLevel = 0.0;
 string   g_DebugReason = "Waiting for M15 Setup";
 datetime g_EAStartTime = 0;
+
 //+------------------------------------------------------------------+
 //| Utility: roll day/week baseline                                  |
 //+------------------------------------------------------------------+
@@ -149,9 +160,6 @@ int TradesSince(datetime fromTime)
 int TradesToday() { return TradesSince(g_DayStartTime); }
 int TradesThisWeek() { return TradesSince(g_WeekStartTime); }
 
-//+------------------------------------------------------------------+
-//| Helpers: count positions                                         |
-//+------------------------------------------------------------------+
 int CountMyPositions()
 {
    int count = 0;
@@ -177,51 +185,25 @@ bool IsFridayLate()
 }
 
 //+------------------------------------------------------------------+
-//| Safety: daily loss lock & max DD lock                             |
+//| Safety: daily loss lock & max DD lock                            |
 //+------------------------------------------------------------------+
 bool IsRiskGuardTriggered()
 {
    UpdateDayWeekBaselines();
 
-   // Trade caps
-   if(TradesToday() >= InpMaxTradesPerDay)
-   {
-      g_DebugReason = "BLOCK: Daily Trade Limit";
-      return true;
-   }
+   if(TradesToday() >= InpMaxTradesPerDay) { g_DebugReason = "BLOCK: Daily Trade Limit"; return true; }
+   if(TradesThisWeek() >= InpMaxTradesPerWeek) { g_DebugReason = "BLOCK: Weekly Trade Limit"; return true; }
+   if(CountMyPositions() >= InpMaxOpenPositions) { g_DebugReason = "BLOCK: Max Open Positions"; return true; }
 
-   if(TradesThisWeek() >= InpMaxTradesPerWeek)
-   {
-      g_DebugReason = "BLOCK: Weekly Trade Limit";
-      return true;
-   }
-
-   if(CountMyPositions() >= InpMaxOpenPositions)
-   {
-      g_DebugReason = "BLOCK: Max Open Positions";
-      return true;
-   }
-
-   // Spread guard (USD price spread for XAUUSD-style symbols)
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double spreadUSD = ask - bid;
-   if(spreadUSD > InpMaxSpreadUSD)
-   {
-      g_DebugReason = StringFormat("BLOCK: Spread too high (%.2f)", spreadUSD);
-      return true;
-   }
+   if(spreadUSD > InpMaxSpreadUSD) { g_DebugReason = StringFormat("BLOCK: Spread too high (%.2f)", spreadUSD); return true; }
 
-   // Friday safety
-   if(InpBlockOnFridayNY && IsFridayLate())
-   {
-      g_DebugReason = "BLOCK: Late Friday safety";
-      return true;
-   }
+   if(InpBlockOnFridayNY && IsFridayLate()) { g_DebugReason = "BLOCK: Late Friday safety"; return true; }
 
-   // Daily loss: compare EQUITY now vs BALANCE at day start (includes closed+floating)
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double dailyPnL = equity - g_DayStartBalance; // negative = loss
+   double dailyPnL = equity - g_DayStartBalance; 
    double dailyLossLimit = -g_DayStartBalance * (InpMaxDailyLossPct / 100.0);
 
    if(dailyPnL <= dailyLossLimit)
@@ -231,39 +213,49 @@ bool IsRiskGuardTriggered()
       return true;
    }
 
-   // Total DD lock
    double baseline = InpUseInitialBalanceDD ? g_InitialBalance : AccountInfoDouble(ACCOUNT_BALANCE);
    if(baseline <= 0.0) baseline = AccountInfoDouble(ACCOUNT_BALANCE);
-
    double ddPct = (baseline - equity) / baseline * 100.0;
+   
    if(ddPct >= InpMaxTotalDDPct)
    {
       g_DebugReason = StringFormat("CRITICAL: Max DD lock (%.2f%% >= %.2f%%)", ddPct, InpMaxTotalDDPct);
-      // Optional: close positions too (usually safer for prop)
       CloseAllPositions();
       return true;
    }
-
    return false;
 }
 
 //+------------------------------------------------------------------+
 //| Execution: validate stops                                        |
 //+------------------------------------------------------------------+
-bool ValidateStopsForBuy(double entry, double sl, double tp)
+bool ValidateStops(double entry, double sl, double tp, ENUM_TRADE_DIR dir)
 {
-   // Basic direction checks
-   if(sl >= entry) return false;
-   if(tp <= entry) return false;
-
-   // Broker minimum stops level
    int stopsLevel = (int)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    double minDist = stopsLevel * _Point;
 
-   if((entry - sl) < minDist) return false;
-   if((tp - entry) < minDist) return false;
-
+   if(dir == DIR_BUY)
+   {
+      if(sl >= entry) return false;
+      if(tp <= entry) return false;
+      if((entry - sl) < minDist) return false;
+      if((tp - entry) < minDist) return false;
+   }
+   else if(dir == DIR_SELL)
+   {
+      if(sl <= entry) return false;
+      if(tp >= entry) return false;
+      if((sl - entry) < minDist) return false;
+      if((entry - tp) < minDist) return false;
+   }
    return true;
+}
+
+bool IsStartDelayActive()
+{
+   if(InpStartDelayHours <= 0) return false;
+   int delaySeconds = InpStartDelayHours * 3600;
+   return (TimeCurrent() - g_EAStartTime) < delaySeconds;
 }
 
 //+------------------------------------------------------------------+
@@ -273,25 +265,17 @@ void OnTick()
 {
    UpdateDashboard();
    
-      if(IsStartDelayActive())
-      {
-         int remain = (InpStartDelayHours * 3600) - (int)(TimeCurrent() - g_EAStartTime);
-         g_DebugReason = StringFormat("START DELAY ACTIVE: %d min remaining", remain / 60);
-         g_State = STATE_IDLE;
-         return;
-      }
-
-   
-   // Prop guard first
-   if(IsRiskGuardTriggered())
+   if(IsStartDelayActive())
    {
+      int remain = (InpStartDelayHours * 3600) - (int)(TimeCurrent() - g_EAStartTime);
+      g_DebugReason = StringFormat("START DELAY ACTIVE: %d min remaining", remain / 60);
       g_State = STATE_IDLE;
       return;
    }
-
+   
+   if(IsRiskGuardTriggered()) { g_State = STATE_IDLE; return; }
    if(InpEnableBE) HandleBreakEven();
 
-   // M15 permission check on new M15 bar
    datetime m15Time = iTime(_Symbol, PERIOD_M15, 0);
    if(m15Time != 0 && m15Time != lastM15)
    {
@@ -304,19 +288,28 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| Step 2: M5 Execution                                             |
+//| Step 2: M5 Execution (Bi-Directional)                            |
 //+------------------------------------------------------------------+
 void MonitorM5Execution()
 {
    double m5_c1 = iClose(_Symbol, PERIOD_M5, 1);
+   bool isBreakout = false;
 
-   bool isBreakout = (m5_c1 > g_BreakoutLevel &&
-                      m5_c1 > iHigh(_Symbol, PERIOD_M5, 2) &&
-                      m5_c1 > iOpen(_Symbol, PERIOD_M5, 1));
+   if(g_SetupDir == DIR_BUY)
+   {
+      if(m5_c1 > g_BreakoutLevel && m5_c1 > iHigh(_Symbol, PERIOD_M5, 2) && m5_c1 > iOpen(_Symbol, PERIOD_M5, 1))
+         isBreakout = true;
+   }
+   else if(g_SetupDir == DIR_SELL)
+   {
+      if(m5_c1 < g_BreakoutLevel && m5_c1 < iLow(_Symbol, PERIOD_M5, 2) && m5_c1 < iOpen(_Symbol, PERIOD_M5, 1))
+         isBreakout = true;
+   }
 
    if(!isBreakout)
    {
-      g_DebugReason = StringFormat("Waiting M5 Close > %.2f", g_BreakoutLevel);
+      if(g_SetupDir == DIR_BUY) g_DebugReason = StringFormat("Waiting Buy Breakout > %.2f", g_BreakoutLevel);
+      else g_DebugReason = StringFormat("Waiting Sell Breakout < %.2f", g_BreakoutLevel);
       return;
    }
 
@@ -324,10 +317,18 @@ void MonitorM5Execution()
    if(CopyBuffer(hM5_RSI, 0, 0, 1, rsi) <= 0) { g_DebugReason = "RSI buffer error"; return; }
    if(CopyBuffer(hM5_ADX, 0, 0, 1, adx) <= 0) { g_DebugReason = "ADX buffer error"; return; }
 
-   if(InpUseRSIFilter && rsi[0] >= InpRSI_Overbought)
+   if(InpUseRSIFilter)
    {
-      g_DebugReason = StringFormat("BLOCK: RSI overbought (%.2f)", rsi[0]);
-      return;
+      if(g_SetupDir == DIR_BUY && rsi[0] >= InpRSI_Overbought)
+      {
+         g_DebugReason = StringFormat("BLOCK: RSI Overbought (%.2f)", rsi[0]);
+         return;
+      }
+      if(g_SetupDir == DIR_SELL && rsi[0] <= InpRSI_Oversold)
+      {
+         g_DebugReason = StringFormat("BLOCK: RSI Oversold (%.2f)", rsi[0]);
+         return;
+      }
    }
 
    if(InpUseADXFilter && adx[0] < InpADX_MinTrend)
@@ -336,44 +337,79 @@ void MonitorM5Execution()
       return;
    }
 
-   ExecuteBuy();
-   g_State = STATE_IDLE;
+   ExecuteTrade(g_SetupDir);
+   g_State = STATE_IDLE; 
+   g_SetupDir = DIR_NONE;
 }
 
 //+------------------------------------------------------------------+
-//| Core: M15 Permission                                             |
+//| Core: M15 Permission (Bi-Directional + Direction Filter)         |
 //+------------------------------------------------------------------+
 void CheckM15Permission()
 {
    double e20[1], e50[1], e100[1], e200[1];
-   if(CopyBuffer(hM15_E20, 0, 0, 1, e20) <= 0) { g_DebugReason = "E20 buffer error"; return; }
-   if(CopyBuffer(hM15_E50, 0, 0, 1, e50) <= 0) { g_DebugReason = "E50 buffer error"; return; }
-   if(CopyBuffer(hM15_E100,0, 0, 1, e100)<= 0) { g_DebugReason = "E100 buffer error"; return; }
-   if(CopyBuffer(hM15_E200,0, 0, 1, e200)<= 0) { g_DebugReason = "E200 buffer error"; return; }
+   if(CopyBuffer(hM15_E20, 0, 0, 1, e20) <= 0) return;
+   if(CopyBuffer(hM15_E50, 0, 0, 1, e50) <= 0) return;
+   if(CopyBuffer(hM15_E100,0, 0, 1, e100)<= 0) return;
+   if(CopyBuffer(hM15_E200,0, 0, 1, e200)<= 0) return;
 
-   if(e20[0] > e50[0] && e50[0] > e100[0] && e100[0] > e200[0])
+   // 1. BULLISH CHECK (Allowed if Mode is BOTH or BUY_ONLY)
+   bool allowBuy = (InpTradeMode == MODE_BOTH || InpTradeMode == MODE_BUY_ONLY);
+   bool isBullishStack = (e20[0] > e50[0] && e50[0] > e100[0] && e100[0] > e200[0]);
+
+   if(allowBuy && isBullishStack)
    {
       g_State = STATE_WAIT_M5_BREAKOUT;
+      g_SetupDir = DIR_BUY;
       g_BreakoutLevel = iHigh(_Symbol, PERIOD_M15, 1) + InpEntryBuffer_USD;
-      g_DebugReason = StringFormat("M15 OK → waiting M5 breakout > %.2f", g_BreakoutLevel);
+      g_DebugReason = StringFormat("M15 BULLISH → Wait M5 > %.2f", g_BreakoutLevel);
+      return; // Exit here so we don't check Sell
    }
-   else
+
+   // 2. BEARISH CHECK (Allowed if Mode is BOTH or SELL_ONLY)
+   bool allowSell = (InpTradeMode == MODE_BOTH || InpTradeMode == MODE_SELL_ONLY);
+   bool isBearishStack = (e20[0] < e50[0] && e50[0] < e100[0] && e100[0] < e200[0]);
+
+   if(allowSell && isBearishStack)
    {
-      g_State = STATE_IDLE;
-      g_DebugReason = "M15 blocked: EMAs not stacked";
+      g_State = STATE_WAIT_M5_BREAKOUT;
+      g_SetupDir = DIR_SELL;
+      g_BreakoutLevel = iLow(_Symbol, PERIOD_M15, 1) - InpEntryBuffer_USD;
+      g_DebugReason = StringFormat("M15 BEARISH → Wait M5 < %.2f", g_BreakoutLevel);
+      return;
    }
+
+   // Default Fail
+   g_State = STATE_IDLE;
+   g_SetupDir = DIR_NONE;
+   
+   if(!allowBuy && isBullishStack) g_DebugReason = "M15 Bullish (Ignored by Setting)";
+   else if(!allowSell && isBearishStack) g_DebugReason = "M15 Bearish (Ignored by Setting)";
+   else g_DebugReason = "M15 Blocked: EMAs mixed/ranging";
 }
 
 //+------------------------------------------------------------------+
-//| Execution: Buy with risk lot                                     |
+//| Execution: Unified Buy/Sell                                      |
 //+------------------------------------------------------------------+
-void ExecuteBuy()
+void ExecuteTrade(ENUM_TRADE_DIR dir)
 {
-   double entry = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-   double sl = entry - InpFixedSL_Dist;
-   double tp = entry + InpFixedTP_Dist;
+   double entry = 0.0, sl = 0.0, tp = 0.0;
 
-   if(!ValidateStopsForBuy(entry, sl, tp))
+   if(dir == DIR_BUY)
+   {
+      entry = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      sl = entry - InpFixedSL_Dist;
+      tp = entry + InpFixedTP_Dist;
+   }
+   else if(dir == DIR_SELL)
+   {
+      entry = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      sl = entry + InpFixedSL_Dist;
+      tp = entry - InpFixedTP_Dist;
+   }
+   else return;
+
+   if(!ValidateStops(entry, sl, tp, dir))
    {
       g_DebugReason = "BLOCK: Invalid SL/TP (stops level or direction)";
       return;
@@ -381,26 +417,16 @@ void ExecuteBuy()
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double riskAmount = balance * (InpRiskPercent / 100.0);
-
    double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSize  = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
 
-   if(tickValue <= 0.0 || tickSize <= 0.0)
-   {
-      g_DebugReason = "BLOCK: Invalid tick data";
-      return;
-   }
+   if(tickValue <= 0.0 || tickSize <= 0.0) { g_DebugReason = "BLOCK: Invalid tick data"; return; }
 
    double slPoints = MathAbs(entry - sl) / _Point;
    double pointValue = tickValue / (tickSize / _Point);
-   if(pointValue <= 0.0 || slPoints <= 0.0)
-   {
-      g_DebugReason = "BLOCK: Lot calc error";
-      return;
-   }
+   if(pointValue <= 0.0 || slPoints <= 0.0) { g_DebugReason = "BLOCK: Lot calc error"; return; }
 
    double lot = riskAmount / (slPoints * pointValue);
-
    double step   = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double maxLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
@@ -409,16 +435,20 @@ void ExecuteBuy()
    if(lot < minLot) lot = minLot;
    if(lot > maxLot) lot = maxLot;
 
-   bool ok = Trade.Buy(lot, _Symbol, entry, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits), InpTradeComment);
+   bool ok = false;
+   if(dir == DIR_BUY)
+      ok = Trade.Buy(lot, _Symbol, entry, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits), InpTradeComment);
+   else
+      ok = Trade.Sell(lot, _Symbol, entry, NormalizeDouble(sl, _Digits), NormalizeDouble(tp, _Digits), InpTradeComment);
 
    if(ok)
-      g_DebugReason = StringFormat("Trade Sent: %.2f lots | Risk $%.2f", lot, riskAmount);
+      g_DebugReason = StringFormat("Trade Sent (%s): %.2f lots", EnumToString(dir), lot);
    else
       g_DebugReason = StringFormat("Order Failed: %d", GetLastError());
 }
 
 //+------------------------------------------------------------------+
-//| BreakEven                                                        |
+//| BreakEven: Handles Buy and Sell                                  |
 //+------------------------------------------------------------------+
 void HandleBreakEven()
 {
@@ -429,13 +459,26 @@ void HandleBreakEven()
       if(Position.SelectByIndex(i) && Position.Magic() == InpMagicNumber && Position.Symbol()==_Symbol)
       {
          double entry = Position.PriceOpen();
-         double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
-         if(Position.StopLoss() < entry && (bid - entry) >= InpBE_Trigger_USD)
+         
+         // BUY Logic
+         if(Position.PositionType() == POSITION_TYPE_BUY)
          {
-            Trade.PositionModify(Position.Ticket(),
-                                 NormalizeDouble(entry + InpBE_Profit_Lock_USD, _Digits),
-                                 Position.TakeProfit());
+            double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if(Position.StopLoss() < entry && (bid - entry) >= InpBE_Trigger_USD)
+            {
+               double newSL = entry + InpBE_Profit_Lock_USD;
+               Trade.PositionModify(Position.Ticket(), NormalizeDouble(newSL, _Digits), Position.TakeProfit());
+            }
+         }
+         // SELL Logic
+         else if(Position.PositionType() == POSITION_TYPE_SELL)
+         {
+            double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            if((Position.StopLoss() > entry || Position.StopLoss() == 0.0) && (entry - ask) >= InpBE_Trigger_USD)
+            {
+               double newSL = entry - InpBE_Profit_Lock_USD;
+               Trade.PositionModify(Position.Ticket(), NormalizeDouble(newSL, _Digits), Position.TakeProfit());
+            }
          }
       }
    }
@@ -450,9 +493,12 @@ void UpdateDashboard()
 
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double dailyPnL = equity - g_DayStartBalance;
+   string dirText = (g_SetupDir == DIR_BUY) ? "BUY" : (g_SetupDir == DIR_SELL) ? "SELL" : "NONE";
+   string modeText = (InpTradeMode == MODE_BOTH) ? "BOTH" : (InpTradeMode == MODE_BUY_ONLY) ? "BUY ONLY" : "SELL ONLY";
 
-   string text = "--- CAMBO SMC PROP GUARD ---\n";
-   text += "State: " + EnumToString(g_State) + "\n";
+   string text = "--- CAMBO SMC PROP GUARD v22.12 ---\n";
+   text += "Mode: " + modeText + "\n";
+   text += "State: " + EnumToString(g_State) + " [" + dirText + "]\n";
    text += "Day Trades: " + (string)TradesToday() + "/" + (string)InpMaxTradesPerDay + "\n";
    text += "Week Trades: " + (string)TradesThisWeek() + "/" + (string)InpMaxTradesPerWeek + "\n";
    text += "Daily PnL: " + DoubleToString(dailyPnL, 2) + "\n";
@@ -484,12 +530,4 @@ void CloseAllPositions()
          Trade.PositionClose(Position.Ticket());
       }
    }
-}
-
-bool IsStartDelayActive()
-{
-   if(InpStartDelayHours <= 0) return false;
-
-   int delaySeconds = InpStartDelayHours * 3600;
-   return (TimeCurrent() - g_EAStartTime) < delaySeconds;
 }
