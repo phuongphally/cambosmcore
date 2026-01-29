@@ -1,376 +1,278 @@
-📘 CamboSMCore v22.12 — EA Documentation
+# 📘 CamboSMCore v22.12 – Direction Mode
 
-Strategy Type: Trend Breakout (Momentum Continuation)
-Platform: MetaTrader 5 (MT5 only)
-Symbol Focus: XAUUSD (Gold)
-Timeframe:
+**Platform:** MetaTrader 5 (MT5 only)  
+**Strategy Type:** Trend Breakout / Momentum Continuation  
+**Primary Symbol:** XAUUSD (Gold)  
+**Author:** Professional AI  
+**Version:** 22.12
 
-Chart: M15 (mandatory)
+---
 
-Execution: M5
+## 1. Overview
 
-Trend: M15 EMA structure
+CamboSMCore is a **low-frequency, prop-firm–safe Expert Advisor** designed to trade **strong directional breakouts** on Gold.
 
-1️⃣ Core Strategy Overview
+The EA focuses on:
+- Clean trend structure
+- Confirmed breakouts (no guessing)
+- Fixed risk–reward (1:3)
+- Strict prop firm risk protection
 
-CamboSMCore is a trend-following breakout EA designed for:
+It is intentionally **simple, strict, and disciplined**.
 
-Prop firm challenges
+---
 
-Strict risk control
+## 2. Timeframe Rules (Mandatory)
 
-Low frequency, high-quality trades
+| Purpose | Timeframe |
+|------|---------|
+| EA Chart | **M15 only** |
+| Trend Detection | M15 |
+| Entry Confirmation | M5 |
 
-Momentum continuation (not reversals)
+❗ If attached to any timeframe other than **M15**, the EA will stop.
 
-Strategy Concept
+---
 
-Identify clear trend on M15 using EMA structure
+## 3. Direction Mode (v22.12 Feature)
 
-Define a breakout level
-
-Wait for confirmed M5 candle close
-
-Enter market order in trend direction
-
-Use fixed SL / TP with 1:3 RR
-
-Enforce hard risk & time rules
-
-2️⃣ Direction Mode (NEW in v22.12)
-Input
+### Input
+```cpp
 InpTradeMode = MODE_BOTH | MODE_BUY_ONLY | MODE_SELL_ONLY
+```
 
-Behavior
-Mode	Allowed Trades
-BOTH	Buy & Sell
-BUY ONLY	Buy trades only
-SELL ONLY	Sell trades only
+### Behavior
+| Mode | Allowed Trades |
+|----|---------------|
+| BOTH | Buy & Sell |
+| BUY ONLY | Buy trades only |
+| SELL ONLY | Sell trades only |
 
-This allows:
+This allows directional bias control and safer prop-firm testing.
 
-Separate Buy-only or Sell-only testing
+---
 
-Safer prop firm optimization
+## 4. Trend Detection (M15 EMA Structure)
 
-Market bias control
+### Indicators Used
+- EMA 20
+- EMA 50
+- EMA 100
+- EMA 200
 
-3️⃣ Timeframe Rules (Very Important)
-Purpose	Timeframe
-EA attached	M15 only
-Trend detection	M15
-Entry confirmation	M5
-Break-even	Tick-based
-
-If attached to any other timeframe → EA will stop.
-
-4️⃣ Trend Detection (M15)
-Indicators Used
-
-EMA 20
-
-EMA 50
-
-EMA 100
-
-EMA 200
-
-Bullish Condition
+### Bullish Trend
+```
 EMA20 > EMA50 > EMA100 > EMA200
+```
 
-Bearish Condition
+### Bearish Trend
+```
 EMA20 < EMA50 < EMA100 < EMA200
+```
 
+If EMAs are mixed → **No trade allowed**.
 
-If EMAs are mixed → NO TRADE
+---
 
-5️⃣ Breakout Logic (M5 Execution)
+## 5. Breakout Logic (M5 Confirmation)
 
-Once M15 trend is valid:
+After a valid M15 trend is detected, the EA waits for **confirmed M5 breakout**.
 
-BUY Setup
+### BUY Breakout Conditions
+- M5 close > previous M15 high + buffer
+- M5 close > previous M5 high
+- M5 candle is bullish (close > open)
 
-Breakout level = previous M15 high + buffer
+### SELL Breakout Conditions
+- M5 close < previous M15 low − buffer
+- M5 close < previous M5 low
+- M5 candle is bearish (close < open)
 
-M5 candle must:
+🟢 **Candle close confirmation only** — no wick entries.
 
-Close above breakout level
+---
 
-Close above previous M5 high
+## 6. Optional Filters
 
-Be bullish (close > open)
-
-SELL Setup
-
-Breakout level = previous M15 low − buffer
-
-M5 candle must:
-
-Close below breakout level
-
-Close below previous M5 low
-
-Be bearish (close < open)
-
-➡️ No wick entries. Candle close only.
-
-6️⃣ Filters (Optional but Safe)
-RSI Filter (M5)
-
-BUY blocked if RSI ≥ InpRSI_Overbought
-
-SELL blocked if RSI ≤ InpRSI_Oversold
+### RSI Filter (M5)
+- BUY blocked if RSI ≥ `InpRSI_Overbought`
+- SELL blocked if RSI ≤ `InpRSI_Oversold`
 
 (Default: OFF)
 
-ADX Filter (M5)
-
-Trade allowed only if:
-
+### ADX Filter (M5)
+- Trade allowed only if:
+```
 ADX ≥ InpADX_MinTrend
-
+```
 
 (Default: ON, value = 20)
 
-Purpose:
+Purpose: avoid ranging markets and trade momentum only.
 
-Avoid ranging markets
+---
 
-Trade only strong momentum
+## 7. Entry Type
 
-7️⃣ Entry Type
+- **Market orders only**
+- No pending orders
+- No limit orders
+- No scaling or averaging
 
-Market orders only
+This ensures fast execution during breakouts.
 
-No pending orders
+---
 
-No limits
+## 8. Stop Loss & Take Profit
 
-No scaling
+| Parameter | Default |
+|--------|--------|
+| Stop Loss | 15.0 |
+| Take Profit | 45.0 |
+| Risk : Reward | **1 : 3** |
 
-No averaging
+Stops are validated against broker minimum stop levels.
 
-Reason:
+---
 
-Breakout strategy requires speed
+## 9. Risk & Lot Calculation
 
-Avoids missed momentum
+### Risk Formula
+```
+Risk = Account Balance × InpRiskPercent
+```
 
-Cleaner prop firm execution
+Lot size is calculated dynamically using:
+- SL distance
+- Tick value
+- Tick size
+- Broker volume constraints
 
-8️⃣ Stop Loss & Take Profit
-Fixed Distances (Price-based)
-Parameter	Default
-SL	15.0
-TP	45.0
-Risk : Reward	1 : 3
-
-Stops are validated against:
-
-Broker minimum stop distance
-
-Direction correctness
-
-Invalid SL/TP → trade blocked
-
-9️⃣ Risk Management (Lot Calculation)
-Risk Formula
-Risk = Balance × InpRiskPercent
-
-
-Lot size is calculated using:
-
-SL distance
-
-Tick value
-
-Tick size
-
-Broker volume rules
-
-✔ Dynamic lot sizing
-✔ Fixed percentage risk
-✔ No martingale
+✔ Fixed % risk  
+✔ No martingale  
+✔ No grid  
 ✔ No compounding tricks
 
-🔟 Break-Even Management
-Trigger
+---
 
-When price moves +25 USD in profit
+## 10. Break-Even Logic
 
-Action
+### Trigger
+- When trade reaches **+25 USD** profit
 
-SL moved to:
-
+### Action
+- SL moved to:
+```
 Entry ± InpBE_Profit_Lock_USD
+```
 
-Asian Session Protection
+### Asian Session Protection
+- Break-even logic can be disabled during Asian session to avoid noise.
 
-BE logic disabled during Asian hours (optional)
+---
 
-This prevents:
+## 11. Start Delay Guard
 
-Early stop-outs
+### Purpose
+- Avoid VPS restarts
+- Avoid rollover spreads
+- Avoid session open volatility
 
-Low-liquidity noise
-
-1️⃣1️⃣ Start Delay Guard
-Purpose
-
-Avoid VPS restarts
-
-Avoid rollover spreads
-
-Avoid session open chaos
-
-Input
+### Input
+```cpp
 InpStartDelayHours = 4
+```
 
-Behavior
+### Behavior
+- EA is fully inactive during delay
+- No signal evaluation
+- Countdown displayed on chart
 
-EA is completely inactive
+---
 
-Only countdown message shown
+## 12. Prop Firm Risk Guards
 
-No logic runs
+### Trade Limits
+| Rule | Default |
+|----|--------|
+| Max trades per day | 1 |
+| Max trades per week | 4 |
+| Max open positions | 1 |
 
-No trades allowed
+### Daily Loss Lock
+- Based on **day-start balance**
+- Uses **equity (floating included)**
+- Optional emergency close
 
-1️⃣2️⃣ Prop Firm Risk Guards (Critical)
-Trade Limits
-Rule	Default
-Max trades / day	1
-Max trades / week	4
-Max open positions	1
-Daily Loss Lock
+### Max Drawdown Lock
+- Based on initial balance (recommended)
+- Uses equity
+- Auto-closes all EA positions
 
-Based on day-start balance
-
-Uses equity (floating included)
-
-If hit:
-
-Trading stops
-
-Optional emergency close
-
-Max Drawdown Lock
-
-Based on:
-
-Initial balance (recommended)
-
-OR current balance
-
-Uses equity
-
-If hit:
-
-All positions closed
-
-EA locked
-
-Spread Protection
-
-Trade blocked if:
-
+### Spread Protection
+- Trades blocked if:
+```
 Ask − Bid > InpMaxSpreadUSD
+```
 
-
-Critical for XAUUSD.
-
-Friday Safety
-
-Trades blocked after:
-
+### Friday Safety
+- Trades blocked after:
+```
 Friday ≥ InpFridayBlockHour
+```
 
+---
 
-Avoids:
+## 13. Dashboard Information
 
-Weekend gaps
+The EA displays:
+- Trade mode (BUY / SELL / BOTH)
+- Current state & direction
+- Daily & weekly trade count
+- Daily PnL
+- Current block or execution status
 
-Liquidity drops
+This ensures full transparency and auditability.
 
-1️⃣3️⃣ Dashboard (On-Chart)
+---
 
-Displays:
+## 14. What This EA Is / Is Not
 
-Trade mode (BUY / SELL / BOTH)
+### ✔ This EA IS
+- Trend-following
+- Breakout-based
+- Prop-firm safe
+- Low-frequency
+- Non-repainting
 
-Current state
+### ❌ This EA is NOT
+- Scalping
+- Reversal trading
+- Grid or martingale
+- News trading
 
-Setup direction
+---
 
-Daily & weekly trade count
+## 15. Final Notes
 
-Daily PnL
+This EA works because it is:
+- Simple
+- Strict
+- Patient
+- Rule-based
 
-Current status / block reason
+⚠️ **Do not add** trailing stops, limit orders, grids, or extra indicators.
 
-This makes the EA transparent and auditable.
+They will reduce performance.
 
-1️⃣4️⃣ Emergency Close
+---
 
-If:
+**Recommended Use:**  
+✔ Prop firm challenges  
+✔ Funded accounts  
+✔ VPS deployment
 
-Daily loss exceeded
+---
 
-Max DD exceeded
+_End of documentation_
 
-Then:
-
-All EA-controlled positions closed immediately
-
-No new trades allowed
-
-✅ What This EA Is (and Is Not)
-✔ It IS
-
-Trend-following
-
-Breakout-based
-
-Prop-firm safe
-
-Low-frequency
-
-Rule-based
-
-Non-repainting
-
-❌ It is NOT
-
-Scalping
-
-Reversal trading
-
-Grid / martingale
-
-News trading
-
-High-frequency
-
-🧠 Final Notes (Very Important)
-
-This EA works because:
-
-It is simple
-
-It is strict
-
-It waits for confirmation
-
-It avoids overtrading
-
-Do not add:
-
-trailing stops
-
-limit orders
-
-averaging
-
-extra indicators
-
-That will reduce performance, not improve it.
