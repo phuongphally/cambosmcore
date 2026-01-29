@@ -66,6 +66,13 @@ input string   InpAsianEnd           = "09:00";
 input group "⏳ START DELAY"
 input int InpStartDelayHours = 4;   // Delay EA start in hours
 
+input group "🧠 AI SCORE ADAPTIVE"
+input bool InpEnableAIScore          = true; // Enable / Disable AI Score filter
+input int  InpAI_BaseThreshold       = 40;   // Normal day
+input int  InpAI_HighVolThreshold    = 60;   // Volatile day
+input int  InpAI_LowVolThreshold     = 30;   // Quiet day
+
+
 //--- GLOBALS
 int hM15_E20, hM15_E50, hM15_E100, hM15_E200;
 int hM5_RSI, hM5_ADX;
@@ -86,6 +93,25 @@ ENUM_TRADE_DIR   g_SetupDir = DIR_NONE;
 double   g_BreakoutLevel = 0.0;
 string   g_DebugReason = "Waiting for M15 Setup";
 datetime g_EAStartTime = 0;
+int hM15_ATR;
+
+enum ENUM_VOL_STATE { VOL_LOW, VOL_NORMAL, VOL_HIGH };
+
+ENUM_VOL_STATE GetVolatilityState()
+{
+   double atr[1];
+   if(CopyBuffer(hM15_ATR, 0, 0, 1, atr) <= 0)
+      return VOL_NORMAL; // fail-safe
+
+   double atrVal = atr[0];
+
+   // GOLD-TUNED PRICE VALUES (XAUUSD)
+   if(atrVal >= 4.0)   return VOL_HIGH;    // explosive / news
+   if(atrVal <= 2.0)   return VOL_LOW;     // dead market
+
+   return VOL_NORMAL;
+}
+
 
 //+------------------------------------------------------------------+
 //| Utility: roll day/week baseline                                  |
@@ -128,6 +154,14 @@ int OnInit()
 
    hM5_RSI   = iRSI(_Symbol, PERIOD_M5, 14, PRICE_CLOSE);
    hM5_ADX   = iADX(_Symbol, PERIOD_M5, 14);
+   
+   hM15_ATR = iATR(_Symbol, PERIOD_M15, 14);
+   if(hM15_ATR == INVALID_HANDLE)
+   {
+      Alert("❌ ATR handle creation failed");
+      return INIT_FAILED;
+   }
+
 
    Trade.SetExpertMagicNumber(InpMagicNumber);
    Trade.SetDeviationInPoints(InpMaxSlippagePoints);
@@ -336,6 +370,36 @@ void MonitorM5Execution()
       g_DebugReason = StringFormat("BLOCK: ADX too low (%.2f)", adx[0]);
       return;
    }
+   
+   // ===============================
+   // 🧠 AI SCORE CONFIRMATION (OPTIONAL)
+   // ===============================
+   if(InpEnableAIScore)
+   {
+      int aiScore = CalculateAIScore();
+      int threshold = GetAdaptiveAIScoreThreshold();
+   
+      // BUY
+      if(g_SetupDir == DIR_BUY && aiScore < threshold)
+      {
+         g_DebugReason = StringFormat(
+            "AI BLOCK BUY: score=%d need=%d",
+            aiScore, threshold
+         );
+         return;
+      }
+   
+      // SELL
+      if(g_SetupDir == DIR_SELL && aiScore > -threshold)
+      {
+         g_DebugReason = StringFormat(
+            "AI BLOCK SELL: score=%d need=-%d",
+            aiScore, threshold
+         );
+         return;
+      }
+   }
+   
 
    ExecuteTrade(g_SetupDir);
    g_State = STATE_IDLE; 
@@ -495,10 +559,18 @@ void UpdateDashboard()
    double dailyPnL = equity - g_DayStartBalance;
    string dirText = (g_SetupDir == DIR_BUY) ? "BUY" : (g_SetupDir == DIR_SELL) ? "SELL" : "NONE";
    string modeText = (InpTradeMode == MODE_BOTH) ? "BOTH" : (InpTradeMode == MODE_BUY_ONLY) ? "BUY ONLY" : "SELL ONLY";
+   int ai = CalculateAIScore();
+   int th = GetAdaptiveAIScoreThreshold();
+   
+   string volTxt = (GetVolatilityState()==VOL_HIGH) ? "HIGH" :
+                   (GetVolatilityState()==VOL_LOW)  ? "LOW"  : "NORMAL";
+
 
    string text = "--- CAMBO SMC PROP GUARD v22.12 ---\n";
    text += "Mode: " + modeText + "\n";
    text += "State: " + EnumToString(g_State) + " [" + dirText + "]\n";
+   text += "AI Score: " + (string)ai + "\n";
+   text += "AI Threshold: ±" + (string)th + " (" + volTxt + ")\n";
    text += "Day Trades: " + (string)TradesToday() + "/" + (string)InpMaxTradesPerDay + "\n";
    text += "Week Trades: " + (string)TradesThisWeek() + "/" + (string)InpMaxTradesPerWeek + "\n";
    text += "Daily PnL: " + DoubleToString(dailyPnL, 2) + "\n";
@@ -530,4 +602,91 @@ void CloseAllPositions()
          Trade.PositionClose(Position.Ticket());
       }
    }
+}
+
+int CalculateAIScore()
+{
+   int score = 0;
+
+   // =========================
+   // 1️⃣ EMA STRUCTURE (M15)
+   // =========================
+   double e20[1], e50[1], e100[1], e200[1];
+   if(CopyBuffer(hM15_E20,  0, 0, 1, e20)  <= 0) return 0;
+   if(CopyBuffer(hM15_E50,  0, 0, 1, e50)  <= 0) return 0;
+   if(CopyBuffer(hM15_E100, 0, 0, 1, e100) <= 0) return 0;
+   if(CopyBuffer(hM15_E200, 0, 0, 1, e200) <= 0) return 0;
+
+   bool bullishStack = (e20[0] > e50[0] && e50[0] > e100[0] && e100[0] > e200[0]);
+   bool bearishStack = (e20[0] < e50[0] && e50[0] < e100[0] && e100[0] < e200[0]);
+
+   if(bullishStack) score += 40;
+   else if(bearishStack) score -= 40;
+
+   // =========================
+   // 2️⃣ ADX STRENGTH (M5)
+   // =========================
+   double adx[1];
+   if(CopyBuffer(hM5_ADX, 0, 0, 1, adx) > 0)
+   {
+      if(adx[0] >= 25)      score += (bullishStack ? 20 : bearishStack ? -20 : 0);
+      else if(adx[0] >= 20) score += (bullishStack ? 10 : bearishStack ? -10 : 0);
+      else                  score -= 20; // chop penalty
+   }
+
+   // =========================
+   // 3️⃣ RSI DIRECTION (M5)
+   // =========================
+   double rsi[1];
+   if(CopyBuffer(hM5_RSI, 0, 0, 1, rsi) > 0)
+   {
+      if(rsi[0] > 55) score += 15;
+      else if(rsi[0] < 45) score -= 15;
+   }
+
+   // =========================
+   // 4️⃣ LAST M15 CANDLE IMPULSE
+   // =========================
+   double open  = iOpen(_Symbol, PERIOD_M15, 1);
+   double close = iClose(_Symbol, PERIOD_M15, 1);
+   double high  = iHigh(_Symbol, PERIOD_M15, 1);
+   double low   = iLow(_Symbol, PERIOD_M15, 1);
+
+   double range = high - low;
+   if(range > 0)
+   {
+      double body = MathAbs(close - open);
+      double bodyRatio = body / range;
+
+      if(bodyRatio >= 0.60)
+      {
+         if(close > open) score += 15;
+         else score -= 15;
+      }
+      else
+      {
+         score -= 10; // weak candle penalty
+      }
+   }
+
+   // =========================
+   // 🔒 CLAMP SCORE
+   // =========================
+   if(score > 100) score = 100;
+   if(score < -100) score = -100;
+
+   return score;
+}
+
+
+int GetAdaptiveAIScoreThreshold()
+{
+   ENUM_VOL_STATE vol = GetVolatilityState();
+
+   if(vol == VOL_HIGH)
+      return InpAI_HighVolThreshold;   // stricter
+   if(vol == VOL_LOW)
+      return InpAI_LowVolThreshold;    // relaxed
+
+   return InpAI_BaseThreshold;         // normal
 }
