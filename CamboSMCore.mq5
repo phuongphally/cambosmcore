@@ -555,26 +555,53 @@ void UpdateDashboard()
 {
    UpdateDayWeekBaselines();
 
-   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double equity   = AccountInfoDouble(ACCOUNT_EQUITY);
    double dailyPnL = equity - g_DayStartBalance;
-   string dirText = (g_SetupDir == DIR_BUY) ? "BUY" : (g_SetupDir == DIR_SELL) ? "SELL" : "NONE";
-   string modeText = (InpTradeMode == MODE_BOTH) ? "BOTH" : (InpTradeMode == MODE_BUY_ONLY) ? "BUY ONLY" : "SELL ONLY";
-   int ai = CalculateAIScore();
-   int th = GetAdaptiveAIScoreThreshold();
+
+   //--- Clean Mode Formatting
+   string modeText = (InpTradeMode == MODE_BOTH)      ? "🔄 BOTH" :
+                     (InpTradeMode == MODE_BUY_ONLY)  ? "🔵 BUY ONLY" : "🔴 SELL ONLY";
+
+   //--- Setup Direction & State
+   string dirText  = (g_SetupDir == DIR_BUY)  ? "▲ BULLISH" :
+                     (g_SetupDir == DIR_SELL) ? "▼ BEARISH" : "○ SCANNING";
+
+   //--- AI Scoring Logic
+   int aiScore = CalculateAIScore();
+   int aiTh    = GetAdaptiveAIScoreThreshold();
    
-   string volTxt = (GetVolatilityState()==VOL_HIGH) ? "HIGH" :
-                   (GetVolatilityState()==VOL_LOW)  ? "LOW"  : "NORMAL";
+   string volTxt = (GetVolatilityState() == VOL_HIGH) ? "⚡ HIGH" :
+                   (GetVolatilityState() == VOL_LOW)  ? "💤 LOW"  : "💎 NORMAL";
 
+   //--- AI Logic Pass/Fail Visualizer
+   string aiStatus = "⬜ NEUTRAL";
+   if(g_SetupDir == DIR_BUY)  aiStatus = (aiScore >= aiTh)  ? "✅ AI PASS" : "❌ AI FILTERED";
+   if(g_SetupDir == DIR_SELL) aiStatus = (aiScore <= -aiTh) ? "✅ AI PASS" : "❌ AI FILTERED";
 
-   string text = "--- CAMBO SMC PROP GUARD v22.12 ---\n";
-   text += "Mode: " + modeText + "\n";
-   text += "State: " + EnumToString(g_State) + " [" + dirText + "]\n";
-   text += "AI Score: " + (string)ai + "\n";
-   text += "AI Threshold: ±" + (string)th + " (" + volTxt + ")\n";
-   text += "Day Trades: " + (string)TradesToday() + "/" + (string)InpMaxTradesPerDay + "\n";
-   text += "Week Trades: " + (string)TradesThisWeek() + "/" + (string)InpMaxTradesPerWeek + "\n";
-   text += "Daily PnL: " + DoubleToString(dailyPnL, 2) + "\n";
-   text += "Status: " + g_DebugReason;
+   //--- Construct Human-Readable String
+   string text = "";
+   text += "╔══════════════════════════════════════╗\n";
+   text += "║      CAMBO SMC PROP GUARD v22.12     ║\n";
+   text += "╚══════════════════════════════════════╝\n\n";
+
+   text += "  [ STRATEGY CONFIG ]\n";
+   text += "  ▸ Mode      : " + modeText + "\n";
+   text += "  ▸ Bias      : " + dirText + "\n";
+   text += "  ▸ State     : " + EnumToString(g_State) + "\n\n";
+
+   text += "  [ AI ADAPTIVE FILTER ]\n";
+   text += "  ▸ Volatility: " + volTxt + "\n";
+   text += "  ▸ AI Score  : " + (string)aiScore + " (Req: ±" + (string)aiTh + ")\n";
+   text += "  ▸ Verdict   : " + aiStatus + "\n\n";
+
+   text += "  [ ACCOUNT & LIMITS ]\n";
+   text += "  ▸ Day Trades: " + (string)TradesToday() + " / " + (string)InpMaxTradesPerDay + "\n";
+   text += "  ▸ Week Limit: " + (string)TradesThisWeek() + " / " + (string)InpMaxTradesPerWeek + "\n";
+   text += "  ▸ Daily PnL : " + (dailyPnL >= 0 ? "+" : "") + DoubleToString(dailyPnL, 2) + " USD\n\n";
+
+   text += "  [ SYSTEM STATUS ]\n";
+   text += "  💬 " + g_DebugReason + "\n";
+   text += "________________________________________";
 
    Comment(text);
 }
