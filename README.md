@@ -253,6 +253,87 @@ This ensures full transparency and auditability.
 
 ---
 
+## 15. AI Score System (Confirmation Layer)
+
+### Purpose
+The **AI Score** acts as a *final intelligent gate* before trade execution.
+
+It does **NOT replace** the strategy logic.
+It only answers one question:
+
+> “Is the current market environment healthy enough to allow this setup?”
+
+If AI Score is **against** the setup → trade is **blocked**.
+If AI Score is **aligned** → trade proceeds normally.
+
+---
+
+### Components Used in AI Score
+The AI Score is a weighted sum of market conditions:
+
+| Component | Description | Weight |
+|--------|------------|--------|
+| EMA Alignment | Confirms trend strength | High |
+| ADX Strength | Confirms momentum | Medium |
+| RSI Position | Avoids exhaustion | Medium |
+| ATR Volatility | Adapts to gold volatility | High |
+| Session Quality | Avoids dead hours | Medium |
+
+---
+
+### Volatility-Adaptive Thresholds (Gold)
+
+ATR (M15) dynamically adjusts how strict the AI Score must be:
+
+| Volatility State | ATR (M15) | Required AI Score |
+|-----------------|-----------|------------------|
+| Low | < 2.0 | ≥ 60 |
+| Normal | 2.0 – 4.0 | ≥ 70 |
+| High / News | > 4.0 | ≥ 85 |
+
+This prevents:
+- Trading during news spikes
+- Trading during dead Asian ranges
+
+---
+
+### Direction Safety Rule
+
+AI Score is **direction-aware**:
+
+- BUY setup → AI Score must be bullish
+- SELL setup → AI Score must be bearish
+
+If AI bias is opposite → **hard block**
+
+This prevents:
+❌ Buy breakouts into bearish momentum
+❌ Sell breakouts into bullish continuation
+
+---
+
+### Execution Flow (Simplified)
+
+1. Prop-firm guards checked
+2. Start delay checked
+3. M15 trend validated
+4. M5 breakout confirmed
+5. **AI Score evaluated** ← NEW
+6. Trade executed only if score ≥ threshold
+
+---
+
+### Philosophy
+
+The AI Score is a *filter*, not a predictor.
+
+It exists to:
+- Reduce bad trades
+- Increase consistency
+- Improve prop-firm survivability
+
+---
+
 ## 15. Final Notes
 
 This EA works because it is:
